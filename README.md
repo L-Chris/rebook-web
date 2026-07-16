@@ -16,6 +16,10 @@ rebook/Markdown 动态生成节点所需的选择器样式。
 
 ## 功能
 
+- 邮箱注册、验证、登录、退出与密码重置
+- 用户独立书架、状态筛选、搜索、阅读进度与断点续读
+- 本地电子书异步导入
+- WebDAV 账号绑定、文件同步、导入和上传（不支持阿里云盘）
 - EPUB、MOBI/AZW3、FB2、CBZ、PDF 阅读
 - 目录、全文搜索、阅读主题、分页/滚动布局
 - AI Chat、图片附件、书籍引用和 Story Memory 工具
@@ -33,13 +37,23 @@ npm run dev
 
 默认开发地址为 `http://127.0.0.1:3132/`。
 
+主要路由：
+
+- `/login`、`/register`、`/verify-email`、`/forgot-password`、`/reset-password`
+- `/shelf`
+- `/settings/cloud-drives`
+- `/reader/:bookId`
+- `/reader`：保留无需登录的本地文件阅读入口
+
 也可以通过 `book` 查询参数加载可访问的电子书 URL：
 
 ```text
 http://127.0.0.1:3132/?book=/path/to/book.epub
 ```
 
-AI Chat、翻译和 Story Memory 的 API、模型与服务地址在设置面板中配置。
+认证、书架和 WebDAV 默认通过 Vite 的 `/api` 代理访问
+`http://127.0.0.1:8083`。AI Chat、翻译和 Story Memory 的 API、模型与服务地址
+仍可在设置面板中配置。
 
 ## 校验
 
