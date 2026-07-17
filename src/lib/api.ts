@@ -102,6 +102,11 @@ export function apiUrl(path: string) {
   return `${apiBase}/api${suffix}`
 }
 
+export function assetUrl(path: string) {
+  if (/^(?:blob:|data:|https?:\/\/)/i.test(path)) return path
+  return apiUrl(path.replace(/^\/api/, ''))
+}
+
 export async function apiFetch(path: string, init: RequestInit = {}) {
   const method = (init.method || 'GET').toUpperCase()
   const headers = new Headers(init.headers)

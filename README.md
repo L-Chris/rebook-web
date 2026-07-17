@@ -7,7 +7,7 @@
 - React 19
 - TypeScript 7.0.2
 - Tailwind CSS 4
-- Vite 6
+- Vite 8
 - rebook 本地依赖
 
 页面布局、工具栏、面板、表单、AI Chat composer 和扩展市场界面均使用
@@ -17,8 +17,10 @@ rebook/Markdown 动态生成节点所需的选择器样式。
 ## 功能
 
 - 邮箱注册、验证、登录、退出与密码重置
-- 用户独立书架、状态筛选、搜索、阅读进度与断点续读
-- 本地电子书异步导入
+- 无需登录的本地书架、搜索、阅读进度与断点续读
+- 本地电子书导入并持久化到浏览器 IndexedDB
+- 登录后叠加显示用户云端书架
+- 菜单内切换 Light/Dark 应用主题（默认 Light）
 - WebDAV 账号绑定、文件同步、导入和上传（不支持阿里云盘）
 - EPUB、MOBI/AZW3、FB2、CBZ、PDF 阅读
 - 目录、全文搜索、阅读主题、分页/滚动布局
@@ -40,16 +42,11 @@ npm run dev
 主要路由：
 
 - `/login`、`/register`、`/verify-email`、`/forgot-password`、`/reset-password`
-- `/shelf`
+- `/`：书架首页（无需登录）
+- `/settings`：应用设置（无需登录）
 - `/settings/cloud-drives`
 - `/reader/:bookId`
-- `/reader`：保留无需登录的本地文件阅读入口
-
-也可以通过 `book` 查询参数加载可访问的电子书 URL：
-
-```text
-http://127.0.0.1:3132/?book=/path/to/book.epub
-```
+- `/reader`：返回书架；阅读器只从书架条目自动加载书籍
 
 认证、书架和 WebDAV 默认通过 Vite 的 `/api` 代理访问
 `http://127.0.0.1:8083`。AI Chat、翻译和 Story Memory 的 API、模型与服务地址

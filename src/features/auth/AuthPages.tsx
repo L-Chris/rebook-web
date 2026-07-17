@@ -18,7 +18,7 @@ export function LoginPage() {
     setError('')
     try {
       await auth.login(email, password)
-      const target = (location.state as { from?: string } | null)?.from || '/shelf'
+      const target = (location.state as { from?: string } | null)?.from || '/'
       navigate(target, { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '登录失败')
@@ -39,8 +39,8 @@ export function LoginPage() {
         <Link className="text-teal-700 hover:text-teal-900" to="/register">注册账号</Link>
         <Link className="text-slate-500 hover:text-slate-800" to="/forgot-password">忘记密码</Link>
       </div>
-      <Link className="mt-6 block text-center text-xs text-slate-400 hover:text-slate-700" to="/reader">
-        暂不登录，打开本地书籍
+      <Link className="mt-6 block text-center text-xs text-slate-400 hover:text-slate-700" to="/">
+        暂不登录，返回本地书架
       </Link>
     </AuthCard>
   )
@@ -108,7 +108,7 @@ export function VerifyEmailPage() {
     auth.verifyEmail(token)
       .then(() => {
         setStatus('邮箱验证成功，正在进入书架…')
-        window.setTimeout(() => navigate('/shelf', { replace: true }), 600)
+        window.setTimeout(() => navigate('/', { replace: true }), 600)
       })
       .catch(reason => {
         setFailed(true)
@@ -191,7 +191,7 @@ export function ResetPasswordPage() {
     setError('')
     try {
       await auth.resetPassword(token, password)
-      navigate('/shelf', { replace: true })
+      navigate('/', { replace: true })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '密码重置失败')
     } finally {

@@ -189,7 +189,7 @@ export function CloudDrivePage() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-7 md:px-7 md:py-10">
-      <button className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900" onClick={() => navigate('/shelf')}>
+      <button className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900" onClick={() => navigate('/')}>
         <ArrowLeft className="h-4 w-4" />
         返回书架
       </button>

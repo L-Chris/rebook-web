@@ -1,22 +1,31 @@
-import { Fragment, isValidElement, useCallback, useEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode } from 'react'
+import { Fragment, isValidElement, useCallback, useEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
+  ArrowLeft,
   ArrowUp,
   BookOpen,
+  Check,
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Info,
+  ListTree,
   Loader2,
+  LogIn,
+  LogOut,
   Maximize2,
+  Menu,
   MessageSquareText,
   Minimize2,
   PanelLeft,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Settings,
   Trash2,
-  Upload,
+  UserRound,
   Volume2,
   X,
 } from 'lucide-react'
@@ -63,11 +72,19 @@ import {
   apiFetch,
   apiRequest,
   apiUrl,
+  assetUrl,
   type ShelfItem,
 } from '../../lib/api'
+import {
+  getLocalBook,
+  isLocalBookId,
+  updateLocalBookMetadata,
+  updateLocalBookProgress,
+} from '../../lib/local-library'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
-type Panel = 'search' | 'chat' | null
+type Panel = 'chat' | null
+type SidebarView = 'toc' | 'search'
 type SettingsSection = 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
 type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
@@ -609,70 +626,32 @@ const domAdapter = new BrowserDOMAdapter()
 const urlFactory = new BrowserURLFactory()
 const parserOptions = { domAdapter, urlFactory }
 const builtInExtensionCatalog = createBuiltInRebookExtensionCatalog()
-const supportedBookFileExtensions = ['.epub', '.mobi', '.azw', '.azw3', '.fb2', '.cbz', '.pdf'] as const
-const supportedBookFileAccept = supportedBookFileExtensions.join(',')
-const supportedBookMimeTypes = new Set([
-  'application/epub+zip',
-  'application/pdf',
-  'application/vnd.amazon.ebook',
-  'application/x-fictionbook+xml',
-  'application/x-mobipocket-ebook',
-  'application/vnd.comicbook+zip',
-  'application/x-cbz',
-])
-const potentialBookDragMimeTypes = new Set([
-  ...supportedBookMimeTypes,
-  'application/octet-stream',
-  'application/xml',
-  'application/zip',
-  'application/x-zip-compressed',
-  'text/xml',
-])
 
 registerBuiltInParsers(registry)
 
-function isSupportedBookFile(file: File): boolean {
-  const name = file.name.toLowerCase()
-  if (supportedBookFileExtensions.some(extension => name.endsWith(extension))) return true
-  return supportedBookMimeTypes.has(normalizeMimeType(file.type))
-}
-
-function hasFileTransfer(dataTransfer: DataTransfer): boolean {
-  if (dataTransfer.files.length > 0) return true
-  return Array.from(dataTransfer.items).some(item => item.kind === 'file')
-}
-
-function isPotentialBookFileTransfer(dataTransfer: DataTransfer): boolean {
-  const files = Array.from(dataTransfer.files)
-  if (files.length > 0) return files.some(isSupportedBookFile)
-
-  const fileItems = Array.from(dataTransfer.items).filter(item => item.kind === 'file')
-  if (!fileItems.length) return false
-
-  return fileItems.some(item => {
-    const type = normalizeMimeType(item.type)
-    return !type || potentialBookDragMimeTypes.has(type)
-  })
-}
-
-function normalizeMimeType(value: string): string {
-  return value.split(';', 1)[0]?.trim().toLowerCase() ?? ''
-}
-
 export type ReaderWorkspaceProps = {
   libraryBookId?: string
+  authenticated?: boolean
+  accountLabel?: string
   onExit?: () => void
+  onLogin?: () => void
+  onLogout?: () => void
 }
 
 function ReaderWorkspace({
   libraryBookId,
+  authenticated = false,
+  accountLabel = '',
   onExit,
+  onLogin,
+  onLogout,
 }: ReaderWorkspaceProps) {
   const viewerRef = useRef<HTMLDivElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
   const readerRef = useRef<any>(null)
   const bookRef = useRef<any>(null)
   const currentFileRef = useRef<File | null>(null)
+  const bookCoverUrlRef = useRef<string | null>(null)
   const progressSaveTimerRef = useRef<number | null>(null)
   const pendingProgressRef = useRef<{
     progress: number
@@ -690,18 +669,28 @@ function ReaderWorkspace({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('reading')
   const [book, setBook] = useState<any>(null)
-  const [bookTitle, setBookTitle] = useState('rebook')
+  const [libraryItem, setLibraryItem] = useState<ShelfItem | null>(null)
+  const [bookTitle, setBookTitle] = useState('')
+  const [bookAuthor, setBookAuthor] = useState('')
+  const [bookCoverUrl, setBookCoverUrl] = useState<string | null>(null)
   const [tocItems, setTocItems] = useState<TOCViewItem[]>([])
   const [location, setLocation] = useState<any>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 900)
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024)
+  const [sidebarView, setSidebarView] = useState<SidebarView>('toc')
+  const [sidebarPinned, setSidebarPinned] = useState(() => {
+    try {
+      return localStorage.getItem('rebook-reader-sidebar-pinned') !== 'false'
+    } catch {
+      return true
+    }
+  })
   const [activePanel, setActivePanel] = useState<Panel>(null)
-  const [status, setStatus] = useState('Drop an e-book here or open a file.')
+  const [status, setStatus] = useState(libraryBookId ? '正在加载书籍…' : '请从书架选择一本书')
   const [busy, setBusy] = useState(false)
-  const [dragging, setDragging] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchScope, setSearchScope] = useState<'unit' | 'book'>('unit')
+  const [searchScope, setSearchScope] = useState<'unit' | 'book'>('book')
   const [searchResults, setSearchResults] = useState<SearchItem[]>([])
-  const [searchStatus, setSearchStatus] = useState('Open a book to search.')
+  const [searchStatus, setSearchStatus] = useState('书籍加载后即可搜索。')
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([])
@@ -718,6 +707,43 @@ function ReaderWorkspace({
   }), [config.extensionCatalogJSON, config.extensionInstallations])
 
   configRef.current = config
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('rebook-reader-sidebar-pinned', String(sidebarPinned))
+    } catch {
+      // Keep the preference for this session when storage is unavailable.
+    }
+  }, [sidebarPinned])
+
+  const replaceBookCover = useCallback((cover: Blob | null) => {
+    if (bookCoverUrlRef.current) URL.revokeObjectURL(bookCoverUrlRef.current)
+    const nextUrl = cover ? URL.createObjectURL(cover) : null
+    bookCoverUrlRef.current = nextUrl
+    setBookCoverUrl(nextUrl)
+  }, [])
+
+  useEffect(() => () => {
+    if (bookCoverUrlRef.current) URL.revokeObjectURL(bookCoverUrlRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!sidebarOpen || sidebarView !== 'search') return
+    const frame = requestAnimationFrame(() => searchInputRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [sidebarOpen, sidebarView])
+
+  useEffect(() => {
+    const openSearch = (event: KeyboardEvent) => {
+      if (settingsOpen || event.altKey || event.shiftKey) return
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return
+      event.preventDefault()
+      setSidebarView('search')
+      setSidebarOpen(true)
+    }
+    document.addEventListener('keydown', openSearch)
+    return () => document.removeEventListener('keydown', openSearch)
+  }, [settingsOpen])
 
   const pushDebugEntry = useCallback((label: string, payload: unknown = {}) => {
     console.log(`[demo] ${label}`, payload)
@@ -737,11 +763,15 @@ function ReaderWorkspace({
       progressSaveTimerRef.current = null
     }
     try {
-      await apiRequest(`/shelf/items/${libraryBookId}/progress`, {
-        method: 'PUT',
-        json: pending,
-        keepalive: true,
-      })
+      if (isLocalBookId(libraryBookId)) {
+        await updateLocalBookProgress(libraryBookId, pending.progress, pending.locator)
+      } else {
+        await apiRequest(`/shelf/items/${libraryBookId}/progress`, {
+          method: 'PUT',
+          json: pending,
+          keepalive: true,
+        })
+      }
     } catch (error) {
       appendDebug('shelf progress save failed', formatError(error))
     }
@@ -1208,10 +1238,29 @@ function ReaderWorkspace({
       if (!options.preserveFile) currentFileRef.current = file
       bookRef.current = openedBook
       setBook(openedBook)
-      setBookTitle(formatLanguageMap(openedBook.metadata?.title) || file.name || 'Untitled')
+      const parsedTitle = formatLanguageMap(openedBook.metadata?.title).trim()
+      const title = parsedTitle && parsedTitle !== file.name ? parsedTitle : titleFromBookFileName(file.name)
+      const author = formatBookContributors(openedBook.metadata?.author)
+      let cover: Blob | null = null
+      try {
+        cover = openedBook.getCover ? await openedBook.getCover() : null
+      } catch (error) {
+        appendDebug('cover extraction failed', formatError(error))
+      }
+      setBookTitle(title)
+      setBookAuthor(author)
+      replaceBookCover(cover)
+      setLibraryItem(current => current ? { ...current, title, author: author || null } : current)
+      if (!options.preserveFile && libraryBookId && isLocalBookId(libraryBookId)) {
+        await updateLocalBookMetadata(libraryBookId, {
+          title,
+          author: author || null,
+          ...(cover ? { cover } : {}),
+        })
+      }
       setChatMessages([])
       setSearchResults([])
-      setSearchStatus('Enter a search term.')
+      setSearchStatus('请输入搜索内容。')
       refreshTOC(targetReader)
       await targetReader.goTo(0)
       setStatus(`Opened ${file.name} in ${formatMs(performance.now() - started)}.`)
@@ -1219,7 +1268,9 @@ function ReaderWorkspace({
       appendDebug('book opened', {
         name: file.name,
         sections: openedBook.sections.length,
-        title: formatLanguageMap(openedBook.metadata?.title),
+        title,
+        author,
+        cover: Boolean(cover),
         toc: flattenTOCItems(openedBook.toc ?? []).length,
       })
     } catch (error) {
@@ -1237,51 +1288,6 @@ function ReaderWorkspace({
     }
   }
 
-  const openPickedFiles = (files: FileList | File[], options: { silentUnsupported?: boolean } = {}) => {
-    const pickedFiles = Array.from(files).filter(Boolean)
-    const file = pickedFiles.find(isSupportedBookFile)
-    if (file) {
-      void openFileWithReader(file)
-      return true
-    }
-    if (pickedFiles.length && !options.silentUnsupported) {
-      setStatus(`Unsupported file type. Please open ${supportedBookFileExtensions.join(', ')}.`)
-    }
-    return false
-  }
-
-  const openURLWithReader = async (url: string, targetReader = readerRef.current) => {
-    if (!targetReader) return
-    setBusy(true)
-    setStatus(`Fetching ${url}...`)
-    try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const blob = await response.blob()
-      const file = new File([blob], getFileNameFromURL(url), {
-        type: blob.type || 'application/octet-stream',
-      })
-      await openFileWithReader(file, targetReader)
-    } catch (error) {
-      setStatus(`Failed to open URL: ${formatError(error)}`)
-      appendDebug('open url failed', { url, error: formatError(error) })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    const url = getInitialBookURL()
-    if (!url) return
-    let cancelled = false
-    void Promise.resolve().then(async () => {
-      if (!cancelled) await openURLWithReader(url)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   useEffect(() => {
     if (!libraryBookId) return
     const controller = new AbortController()
@@ -1291,13 +1297,28 @@ function ReaderWorkspace({
       setBusy(true)
       setStatus('正在从书架加载书籍…')
       try {
-        const item = await apiRequest<ShelfItem>(`/shelf/items/${libraryBookId}`)
-        const response = await apiFetch(`/shelf/items/${libraryBookId}/file`, {
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        let item: ShelfItem
+        let file: File
+        if (isLocalBookId(libraryBookId)) {
+          const localBook = await getLocalBook(libraryBookId)
+          if (!localBook) throw new Error('本地书籍不存在，可能已被浏览器清理')
+          item = localBook.item
+          file = localBook.file
+        } else {
+          item = await apiRequest<ShelfItem>(`/shelf/items/${libraryBookId}`)
+          const response = await apiFetch(`/shelf/items/${libraryBookId}/file`, {
+            signal: controller.signal,
+          })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const blob = await response.blob()
+          file = new File(
+            [blob],
+            item.fileName || item.sourceFileName || `${item.title}.${item.sourceType}`,
+            { type: blob.type || 'application/octet-stream' },
+          )
+        }
         if (cancelled) return
+        setLibraryItem(item)
 
         const nextConfig = {
           ...configRef.current,
@@ -1307,11 +1328,6 @@ function ReaderWorkspace({
         setConfig(nextConfig)
         setDraftConfig(nextConfig)
         await resetReader(nextConfig, null)
-        const file = new File(
-          [blob],
-          item.fileName || item.sourceFileName || `${item.title}.${item.sourceType}`,
-          { type: blob.type || 'application/octet-stream' },
-        )
         await openFileWithReader(file, readerRef.current)
         const unitIndex = item.locator?.unitIndex
         if (typeof unitIndex === 'number') {
@@ -1397,18 +1413,18 @@ function ReaderWorkspace({
     }
   }
 
-  const runSearch = async () => {
+  const runSearch = async (rawQuery = searchQuery) => {
     const reader = readerRef.current
     if (!reader || !bookRef.current) {
-      setSearchStatus('Open a book to search.')
+      setSearchStatus('书籍加载后即可搜索。')
       return
     }
-    const query = searchQuery.trim()
+    const query = rawQuery.trim()
     if (!query) {
-      setSearchStatus('Enter a search term.')
+      setSearchStatus('请输入搜索内容。')
       return
     }
-    setSearchStatus('Searching...')
+    setSearchStatus('正在搜索…')
     reader.clearMarks?.('search')
     const results = await reader.search(query, {
       scope: searchScope === 'unit' ? 'unit' : 'book',
@@ -1417,7 +1433,7 @@ function ReaderWorkspace({
       contextChars: 96,
     })
     setSearchResults(results)
-    setSearchStatus(results.length ? `${results.length} result${results.length === 1 ? '' : 's'}.` : 'No results.')
+    setSearchStatus(results.length ? `找到 ${results.length} 个结果` : '没有找到匹配内容。')
   }
 
   const goToSearchResult = async (item: SearchItem) => {
@@ -1647,58 +1663,45 @@ function ReaderWorkspace({
     <div
       className="reader-shell flex h-full min-h-0 flex-col"
       data-reader-theme={config.theme}
-      onDragOver={event => {
-        event.preventDefault()
-        setDragging(isPotentialBookFileTransfer(event.dataTransfer))
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={event => {
-        event.preventDefault()
-        setDragging(false)
-        if (!hasFileTransfer(event.dataTransfer)) return
-        const shouldReportUnsupported = isPotentialBookFileTransfer(event.dataTransfer)
-        openPickedFiles(event.dataTransfer.files, { silentUnsupported: !shouldReportUnsupported })
-      }}
     >
-      <Header
-        busy={busy}
-        bookTitle={bookTitle}
-        chapterLabel={location?.tocItem?.label || status}
-        progress={location?.totalFraction ?? 0}
-        sidebarOpen={sidebarOpen}
-        activePanel={activePanel}
-        onExit={onExit}
-        onToggleSidebar={() => setSidebarOpen(open => !open)}
-        onOpenFile={() => fileInputRef.current?.click()}
-        onOpenSettings={() => {
-          setDraftConfig(config)
-          setSettingsOpen(true)
-        }}
-        onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
-      />
-
-      <input
-        ref={fileInputRef}
-        hidden
-        type="file"
-        accept={supportedBookFileAccept}
-        onChange={event => {
-          if (event.target.files) openPickedFiles(event.target.files)
-          event.currentTarget.value = ''
-        }}
-      />
-
       <main className="relative flex min-h-0 flex-1 overflow-hidden">
         {sidebarOpen && (
           <>
             <button
               type="button"
-              className="absolute inset-0 z-30 bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
-              aria-label="Close table of contents"
+              className="absolute inset-0 z-[60] bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
+              aria-label="关闭侧边栏"
               onClick={() => setSidebarOpen(false)}
             />
-            <TOCSidebar
+            <ReaderSidebar
               items={tocItems}
+              view={sidebarView}
+              pinned={sidebarPinned}
+              bookTitle={bookTitle || libraryItem?.title || '正在加载…'}
+              bookAuthor={bookAuthor || libraryItem?.author || ''}
+              bookFormat={libraryItem?.sourceType || ''}
+              coverUrl={bookCoverUrl || (libraryItem?.coverUrl ? assetUrl(libraryItem.coverUrl) : null)}
+              searchInputRef={searchInputRef}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              searchScope={searchScope}
+              setSearchScope={setSearchScope}
+              searchStatus={searchStatus}
+              searchResults={searchResults}
+              onSetView={setSidebarView}
+              onClose={() => setSidebarOpen(false)}
+              onTogglePinned={() => setSidebarPinned(value => !value)}
+              onRunSearch={query => void runSearch(query)}
+              onClearSearch={() => {
+                readerRef.current?.clearMarks?.('search')
+                setSearchQuery('')
+                setSearchResults([])
+                setSearchStatus(bookRef.current ? '请输入搜索内容。' : '书籍加载后即可搜索。')
+              }}
+              onSearchNavigate={item => {
+                void goToSearchResult(item)
+                if (window.innerWidth < 1024) setSidebarOpen(false)
+              }}
               onNavigate={target => {
                 void readerRef.current?.goTo?.(target)
                 if (window.innerWidth < 1024) setSidebarOpen(false)
@@ -1707,25 +1710,31 @@ function ReaderWorkspace({
           </>
         )}
 
-        <section className="relative flex min-w-0 flex-1 flex-col p-0 sm:px-4 sm:pb-4 sm:pt-3">
-          <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface)] shadow-[0_18px_60px_var(--ui-shadow)]">
+        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--ui-surface)] p-0 [@media(hover:none)]:pt-14">
+          <Header
+            busy={busy}
+            bookTitle={bookTitle}
+            sidebarOpen={sidebarOpen}
+            activePanel={activePanel}
+            authenticated={authenticated}
+            accountLabel={accountLabel}
+            onExit={onExit}
+            onLogin={onLogin}
+            onLogout={onLogout}
+            onToggleSidebar={() => setSidebarOpen(value => !value)}
+            onOpenSettings={() => {
+              setDraftConfig(config)
+              setSettingsOpen(true)
+            }}
+            onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
+          />
+          <div className="relative min-h-0 flex-1 overflow-hidden bg-[var(--ui-surface)]">
             <div ref={viewerRef} id="viewer" />
             {!book && (
-              <div className={`absolute inset-0 grid place-items-center p-8 transition ${dragging ? 'bg-blue-50' : 'bg-white/92'}`}>
-                <div className="max-w-md text-center">
-                  <span className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-lg bg-[var(--ui-accent-soft)] text-[var(--ui-accent)]">
-                    <BookOpen className="h-8 w-8" />
-                  </span>
-                  <h2 className="font-serif text-2xl font-semibold text-slate-900">Open an e-book</h2>
-                  <p className="mt-2 text-sm text-slate-500">EPUB · MOBI · AZW3 · FB2 · CBZ · PDF</p>
-                  <button
-                    type="button"
-                    className="mt-6 inline-flex h-10 items-center gap-2 rounded-lg bg-[var(--ui-accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--ui-accent-hover)]"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="h-4 w-4" />
-                    Open File
-                  </button>
+              <div className="absolute inset-0 grid place-items-center bg-white/92 p-8">
+                <div className="max-w-md text-center text-sm text-[var(--ui-muted)]">
+                  {busy ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-[var(--ui-accent)]" /> : null}
+                  {status}
                 </div>
               </div>
             )}
@@ -1737,14 +1746,14 @@ function ReaderWorkspace({
           <>
             <button
               type="button"
-              className="absolute inset-0 z-30 bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
+              className="absolute inset-0 z-[60] bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
               aria-label="Close panel"
               onClick={() => setActivePanel(null)}
             />
             <RightPanel
               panel={activePanel}
-              width={activePanel === 'chat' ? chatPanelWidth : 420}
-              onClearChat={activePanel === 'chat' ? () => {
+              width={chatPanelWidth}
+              onClearChat={() => {
                 setChatMessages(messages => {
                   revokeChatAttachmentURLs(messages.flatMap(message => message.attachments ?? []))
                   return []
@@ -1754,7 +1763,7 @@ function ReaderWorkspace({
                   revokeChatAttachmentURLs(items)
                   return []
                 })
-              } : undefined}
+              }}
               setWidth={value => {
                 const width = clampPanelWidth(value)
                 setChatPanelWidth(width)
@@ -1765,25 +1774,6 @@ function ReaderWorkspace({
               }}
               onClose={() => setActivePanel(null)}
             >
-            {activePanel === 'search' && (
-              <SearchPanel
-                query={searchQuery}
-                setQuery={setSearchQuery}
-                scope={searchScope}
-                setScope={setSearchScope}
-                status={searchStatus}
-                results={searchResults}
-                onRun={() => void runSearch()}
-                onClear={() => {
-                  readerRef.current?.clearMarks?.('search')
-                  setSearchQuery('')
-                  setSearchResults([])
-                  setSearchStatus(bookRef.current ? 'Enter a search term.' : 'Open a book to search.')
-                }}
-                onNavigate={goToSearchResult}
-              />
-            )}
-            {activePanel === 'chat' && (
               <ChatPanel
                 messages={chatMessages}
                 input={chatInput}
@@ -1799,7 +1789,6 @@ function ReaderWorkspace({
                 onSend={() => void sendChatMessage()}
                 onCitation={href => void openChatCitation(href)}
               />
-            )}
             </RightPanel>
           </>
         )}
@@ -1834,57 +1823,240 @@ function ReaderWorkspace({
 function Header(props: {
   busy: boolean
   bookTitle: string
-  chapterLabel: string
-  progress: number
   sidebarOpen: boolean
   activePanel: Panel
+  authenticated: boolean
+  accountLabel: string
   onExit?: () => void
+  onLogin?: () => void
+  onLogout?: () => void
   onToggleSidebar(): void
-  onOpenFile(): void
   onOpenSettings(): void
   onTogglePanel(panel: Panel): void
 }) {
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const hideTimerRef = useRef<number | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [revealed, setRevealed] = useState(false)
+  const [hoverCapable, setHoverCapable] = useState(() => window.matchMedia('(hover: hover) and (pointer: fine)').matches)
+
+  const reveal = useCallback(() => {
+    if (hideTimerRef.current != null) window.clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = null
+    setRevealed(true)
+  }, [])
+
+  const scheduleHide = useCallback(() => {
+    if (!hoverCapable || menuOpen) return
+    if (hideTimerRef.current != null) window.clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = window.setTimeout(() => setRevealed(false), 500)
+  }, [hoverCapable, menuOpen])
+
+  useEffect(() => {
+    const media = window.matchMedia('(hover: hover) and (pointer: fine)')
+    const update = () => setHoverCapable(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => () => {
+    if (hideTimerRef.current != null) window.clearTimeout(hideTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const closeMenu = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [menuOpen])
+
+  const visible = !hoverCapable || revealed || menuOpen
+
   return (
-    <header className="grid h-14 shrink-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-slate-200 bg-white/92 px-2 backdrop-blur sm:px-3">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-50 h-14">
+      <div
+        className="pointer-events-auto absolute inset-x-0 top-0 h-7"
+        aria-hidden="true"
+        onPointerEnter={reveal}
+      />
+      <header
+        className={`absolute inset-x-0 top-0 grid h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-[var(--ui-border)] bg-white/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
+          visible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'
+        }`}
+        onPointerEnter={reveal}
+        onPointerLeave={scheduleHide}
+        onFocus={reveal}
+        onBlur={scheduleHide}
+      >
       <div className="flex min-w-0 items-center gap-1.5">
-        <button className={iconButtonClass} type="button" onClick={props.onToggleSidebar} title="Toggle sidebar">
+        <button
+          className={iconButtonClass}
+          type="button"
+          onClick={props.onToggleSidebar}
+          title={props.sidebarOpen ? '收起侧边栏' : '打开侧边栏'}
+        >
           <PanelLeft className="h-4 w-4" />
-        </button>
-        <button className="hidden items-center gap-2 rounded-lg px-1 py-1 sm:flex" type="button" onClick={props.onExit}>
-          <span className="grid h-7 w-7 place-items-center rounded-lg bg-[var(--ui-accent)] text-white">
-            <BookOpen className="h-4 w-4" />
-          </span>
-          <strong className="text-sm text-[var(--ui-text)]">rebook</strong>
         </button>
       </div>
       <div className="min-w-0 text-center">
-        <div className="truncate text-sm font-semibold text-[var(--ui-text)]">{props.bookTitle}</div>
-        <div className="mt-0.5 truncate text-[11px] text-[var(--ui-muted)]">
-          {props.chapterLabel} · {formatProgress({ totalFraction: props.progress })}
+        <div className="flex items-center justify-center gap-2 truncate text-sm font-semibold text-[var(--ui-text)]">
+          {props.busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : null}
+          <span className="truncate">{props.bookTitle || (props.busy ? '正在加载…' : '阅读器')}</span>
         </div>
       </div>
       <div className="flex items-center justify-end gap-1">
-      <button className={toolbarButtonClass} type="button" onClick={props.onOpenFile}>
-        {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-        <span className="hidden xl:inline">Open</span>
-      </button>
-      <button className={panelButtonClass(props.activePanel === 'search')} type="button" onClick={() => props.onTogglePanel('search')}>
-        <Search className="h-4 w-4" />
-        <span className="hidden xl:inline">Search</span>
-      </button>
-      <button className={panelButtonClass(props.activePanel === 'chat')} type="button" onClick={() => props.onTogglePanel('chat')}>
-        <MessageSquareText className="h-4 w-4" />
-        <span className="hidden xl:inline">Chat</span>
-      </button>
-      <button className={iconButtonClass} type="button" onClick={props.onOpenSettings} title="Settings">
-        <Settings className="h-4 w-4" />
-      </button>
+        <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title="Chat">
+          <MessageSquareText className="h-4 w-4" />
+        </button>
+        <button className={iconButtonClass} type="button" onClick={props.onOpenSettings} title="阅读设置">
+          <span className="text-base font-semibold leading-none">Aa</span>
+        </button>
+        <div className="relative" ref={menuRef}>
+          <button
+            className={panelButtonClass(menuOpen)}
+            type="button"
+            title="Menu"
+            aria-label="打开菜单"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(open => !open)}
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+          {menuOpen ? (
+            <div className="absolute right-0 top-11 z-[60] w-60 overflow-hidden rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-raised)] p-2 text-left shadow-[0_18px_50px_var(--ui-shadow-strong)]">
+              {props.authenticated ? (
+                <div className="mb-1 flex items-center gap-2.5 border-b border-[var(--ui-border)] px-3 py-2.5">
+                  <UserRound className="h-4 w-4 shrink-0 text-[var(--ui-muted)]" />
+                  <span className="truncate text-xs text-[var(--ui-muted-strong)]">{props.accountLabel}</span>
+                </div>
+              ) : null}
+              {props.onExit ? (
+                <ReaderMenuAction
+                  icon={<ArrowLeft className="h-4 w-4" />}
+                  label="返回书架"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    props.onExit?.()
+                  }}
+                />
+              ) : null}
+              <ReaderMenuAction
+                icon={<Settings className="h-4 w-4" />}
+                label="阅读设置"
+                onClick={() => {
+                  setMenuOpen(false)
+                  props.onOpenSettings()
+                }}
+              />
+              {!props.authenticated && props.onLogin ? (
+                <ReaderMenuAction
+                  icon={<LogIn className="h-4 w-4" />}
+                  label="登录"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    props.onLogin?.()
+                  }}
+                />
+              ) : null}
+              {props.authenticated && props.onLogout ? (
+                <ReaderMenuAction
+                  icon={<LogOut className="h-4 w-4" />}
+                  label="退出登录"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    props.onLogout?.()
+                  }}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        {props.onExit ? (
+          <button className={iconButtonClass} type="button" onClick={props.onExit} title="返回书架">
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
-    </header>
+      </header>
+    </div>
   )
 }
 
-function TOCSidebar({ items, onNavigate }: { items: readonly DemoTOCItem[]; onNavigate(target: string): void }) {
+function ReaderMenuAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode
+  label: string
+  onClick(): void
+}) {
+  return (
+    <button
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-[var(--ui-text-soft)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]"
+      type="button"
+      onClick={onClick}
+    >
+      <span className="text-[var(--ui-muted)]">{icon}</span>
+      {label}
+    </button>
+  )
+}
+
+function ReaderSidebar({
+  items,
+  view,
+  pinned,
+  bookTitle,
+  bookAuthor,
+  bookFormat,
+  coverUrl,
+  searchInputRef,
+  searchQuery,
+  setSearchQuery,
+  searchScope,
+  setSearchScope,
+  searchStatus,
+  searchResults,
+  onSetView,
+  onClose,
+  onTogglePinned,
+  onRunSearch,
+  onClearSearch,
+  onSearchNavigate,
+  onNavigate,
+}: {
+  items: readonly DemoTOCItem[]
+  view: SidebarView
+  pinned: boolean
+  bookTitle: string
+  bookAuthor: string
+  bookFormat: string
+  coverUrl: string | null
+  searchInputRef: RefObject<HTMLInputElement | null>
+  searchQuery: string
+  setSearchQuery(value: string): void
+  searchScope: 'unit' | 'book'
+  setSearchScope(value: 'unit' | 'book'): void
+  searchStatus: string
+  searchResults: SearchItem[]
+  onSetView(view: SidebarView): void
+  onClose(): void
+  onTogglePinned(): void
+  onRunSearch(query?: string): void
+  onClearSearch(): void
+  onSearchNavigate(item: SearchItem): void
+  onNavigate(target: string): void
+}) {
   const activePath = useMemo(() => findActiveTOCPath(items), [items])
   const activePathKey = activePath.join('\u0000')
   const activeBranchIds = useMemo(() => new Set(activePath), [activePathKey])
@@ -1924,25 +2096,119 @@ function TOCSidebar({ items, onNavigate }: { items: readonly DemoTOCItem[]; onNa
   }, [])
 
   return (
-    <aside className="absolute inset-y-0 left-0 z-40 w-[min(84vw,18rem)] shrink-0 overflow-hidden border-r border-slate-200 bg-white/84 shadow-2xl lg:relative lg:z-auto lg:w-72 lg:shadow-none">
-      <div className="border-b border-slate-200 px-4 py-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Table of Contents</div>
+    <aside className={`absolute inset-y-0 left-0 z-[70] flex w-60 shrink-0 flex-col overflow-hidden border-r border-[var(--ui-border)] bg-white/92 shadow-2xl backdrop-blur-xl ${
+      pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-40'
+    }`}>
+      <div className="flex h-14 shrink-0 items-center gap-1 border-b border-[var(--ui-border)] px-3">
+        <button className={iconButtonClass} type="button" onClick={onClose} title="收起侧边栏">
+          <PanelLeft className="h-4 w-4" />
+        </button>
+        <div className="flex-1" />
+        <button
+          className={sidebarToolButtonClass(view === 'search')}
+          type="button"
+          onClick={() => onSetView('search')}
+          title="搜索"
+          aria-pressed={view === 'search'}
+        >
+          <Search className="h-4 w-4" />
+        </button>
+        <button
+          className={sidebarToolButtonClass(view === 'toc')}
+          type="button"
+          onClick={() => onSetView('toc')}
+          title="目录"
+          aria-pressed={view === 'toc'}
+        >
+          <ListTree className="h-4 w-4" />
+        </button>
+        <button
+          className={`${sidebarToolButtonClass(pinned)} hidden lg:inline-flex`}
+          type="button"
+          onClick={onTogglePinned}
+          title={pinned ? '取消固定侧边栏' : '固定侧边栏'}
+          aria-pressed={pinned}
+        >
+          {pinned ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
+        </button>
       </div>
-      <div className="h-full overflow-auto pb-16">
-        {items.length ? (
-          <TOCTree
-            items={items}
-            onNavigate={onNavigate}
-            depth={0}
-            expandedIds={expandedIds}
-            activeBranchIds={activeBranchIds}
-            onToggle={toggleItem}
-          />
+
+      {view === 'search' ? (
+        <SearchPanel
+          inputRef={searchInputRef}
+          query={searchQuery}
+          setQuery={setSearchQuery}
+          scope={searchScope}
+          setScope={setSearchScope}
+          status={searchStatus}
+          results={searchResults}
+          bookSummary={(
+            <SidebarBookSummary
+              title={bookTitle}
+              author={bookAuthor}
+              format={bookFormat}
+              coverUrl={coverUrl}
+            />
+          )}
+          onRun={onRunSearch}
+          onClear={onClearSearch}
+          onNavigate={onSearchNavigate}
+        />
+      ) : (
+        <>
+          <SidebarBookSummary title={bookTitle} author={bookAuthor} format={bookFormat} coverUrl={coverUrl} />
+          <div className="flex h-11 shrink-0 items-center justify-between border-y border-[var(--ui-border)] px-4">
+            <span className="text-sm font-semibold text-[var(--ui-text)]">目录</span>
+            <span className="text-xs text-[var(--ui-muted)]">{items.length}</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto py-2">
+            {items.length ? (
+              <TOCTree
+                items={items}
+                onNavigate={onNavigate}
+                depth={0}
+                expandedIds={expandedIds}
+                activeBranchIds={activeBranchIds}
+                onToggle={toggleItem}
+              />
+            ) : (
+              <p className="px-4 py-5 text-sm text-[var(--ui-muted)]">书籍加载后将在这里显示目录。</p>
+            )}
+          </div>
+        </>
+      )}
+    </aside>
+  )
+}
+
+function SidebarBookSummary({
+  title,
+  author,
+  format,
+  coverUrl,
+}: {
+  title: string
+  author: string
+  format: string
+  coverUrl: string | null
+}) {
+  return (
+    <div className="flex min-h-28 shrink-0 items-center gap-3 px-4 py-4">
+      <div className="grid h-[4.5rem] w-12 shrink-0 place-items-center overflow-hidden rounded-md bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] shadow-md">
+        {coverUrl ? (
+          <img className="h-full w-full object-cover" src={coverUrl} alt="" />
         ) : (
-          <p className="px-4 py-5 text-sm text-slate-500">Open a book to show its contents.</p>
+          <BookOpen className="h-5 w-5" />
         )}
       </div>
-    </aside>
+      <div className="min-w-0 flex-1">
+        <div className="line-clamp-2 text-base font-semibold leading-snug text-[var(--ui-text)]">{title}</div>
+        <div className="mt-1 truncate text-sm text-[var(--ui-muted)]">{author || format.toUpperCase() || '电子书'}</div>
+      </div>
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[var(--ui-muted)]" title={`${title}${author ? ` · ${author}` : ''}`}>
+        <Info className="h-4 w-4" />
+      </span>
+    </div>
   )
 }
 
@@ -1978,8 +2244,12 @@ function TOCTree({
           <li key={itemId} data-toc-depth={depth} data-toc-expanded={hasChildren ? String(expanded) : undefined}>
             <div
               className={[
-                'group flex min-w-0 items-center gap-1 pr-2 text-sm transition',
-                isDemoTOCItemActive(item) ? 'bg-blue-50 text-blue-700' : branchActive ? 'bg-slate-50 text-blue-700' : 'text-slate-700 hover:bg-slate-100',
+                'group mx-2 flex min-w-0 items-center gap-1 rounded-lg pr-2 text-sm transition',
+                isDemoTOCItemActive(item)
+                  ? 'bg-[var(--ui-accent-soft)] font-medium text-[var(--ui-accent-text)]'
+                  : branchActive
+                    ? 'bg-[var(--ui-surface-muted)] text-[var(--ui-accent-text)]'
+                    : 'text-[var(--ui-text-soft)] hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]',
                 disabled ? 'opacity-45' : '',
               ].join(' ')}
               style={{ paddingLeft: 8 + depth * 14 }}
@@ -1987,7 +2257,7 @@ function TOCTree({
               {hasChildren ? (
                 <button
                   type="button"
-                  className="grid h-7 w-6 shrink-0 place-items-center text-slate-400 transition hover:text-slate-700"
+                  className="grid h-8 w-6 shrink-0 place-items-center text-[var(--ui-muted)] transition hover:text-[var(--ui-text)]"
                   onClick={() => onToggle(itemId)}
                   aria-expanded={expanded}
                   title={expanded ? 'Collapse section' : 'Expand section'}
@@ -1995,14 +2265,14 @@ function TOCTree({
                   {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                 </button>
               ) : (
-                <span className="h-7 w-6 shrink-0" />
+                <span className="h-8 w-6 shrink-0" />
               )}
               <button
                 type="button"
                 disabled={disabled}
                 onClick={() => target ? onNavigate(target) : undefined}
                 className={[
-                  'min-w-0 flex-1 truncate py-1.5 text-left transition',
+                  'min-w-0 flex-1 truncate py-2 text-left transition',
                   disabled ? 'cursor-not-allowed' : '',
                 ].join(' ')}
                 title={getDemoTOCItemLabel(item)}
@@ -2094,7 +2364,7 @@ function RightPanel(props: {
   const dragRef = useRef<{ right: number } | null>(null)
   return (
     <aside
-      className="absolute inset-y-0 right-0 z-40 max-w-[92vw] shrink-0 border-l border-slate-200 bg-white shadow-2xl lg:relative lg:z-auto lg:shadow-none"
+      className="absolute inset-y-0 right-0 z-[70] max-w-[92vw] shrink-0 border-l border-slate-200 bg-white shadow-2xl lg:relative lg:z-auto lg:shadow-none"
       style={{ width: props.width }}
     >
       {props.panel === 'chat' && (
@@ -2134,55 +2404,152 @@ function RightPanel(props: {
 }
 
 function SearchPanel(props: {
+  inputRef: RefObject<HTMLInputElement | null>
   query: string
   setQuery(value: string): void
   scope: 'unit' | 'book'
   setScope(value: 'unit' | 'book'): void
   status: string
   results: SearchItem[]
-  onRun(): void
+  bookSummary: ReactNode
+  onRun(query?: string): void
   onClear(): void
   onNavigate(item: SearchItem): void
 }) {
+  const scopeMenuRef = useRef<HTMLDivElement | null>(null)
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false)
+  const groupedResults = useMemo(() => {
+    const groups: Array<{ key: string; label: string; items: Array<{ item: SearchItem; index: number }> }> = []
+    const groupMap = new Map<string, (typeof groups)[number]>()
+    props.results.forEach((item, index) => {
+      const key = `${item.unitIndex}:${item.unitTitle || item.unitKind}`
+      let group = groupMap.get(key)
+      if (!group) {
+        group = {
+          key,
+          label: item.unitTitle || `${item.unitKind} ${item.unitIndex + 1}`,
+          items: [],
+        }
+        groupMap.set(key, group)
+        groups.push(group)
+      }
+      group.items.push({ item, index })
+    })
+    return groups
+  }, [props.results])
+
+  useEffect(() => {
+    if (!scopeMenuOpen) return
+    const close = (event: PointerEvent) => {
+      if (!scopeMenuRef.current?.contains(event.target as Node)) setScopeMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setScopeMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', close)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', close)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [scopeMenuOpen])
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="space-y-2 border-b border-slate-200 p-3">
-        <div className="flex gap-2">
-          <input
-            className={`${inputClass} flex-1`}
-            value={props.query}
-            placeholder="Search text"
-            onChange={event => props.setQuery(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter') props.onRun()
-            }}
-          />
-          <button className={toolbarButtonClass} type="button" onClick={props.onRun}>Run</button>
-        </div>
-        <div className="flex items-center gap-2">
-          <select className={`${inputClass} flex-1`} value={props.scope} onChange={event => props.setScope(event.target.value as any)}>
-            <option value="unit">Current unit</option>
-            <option value="book">Whole book</option>
-          </select>
-          <button className={toolbarButtonClass} type="button" onClick={props.onClear}>Clear</button>
-        </div>
-        <p className="text-xs text-slate-500">{props.status}</p>
+      <div className="shrink-0 border-b border-[var(--ui-border)] p-2">
+        <form
+          className="flex items-stretch overflow-visible rounded-xl border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] focus-within:border-[var(--ui-accent)] focus-within:ring-3 focus-within:ring-[var(--ui-accent-softer)]"
+          onSubmit={event => {
+            event.preventDefault()
+            props.onRun(props.inputRef.current?.value ?? props.query)
+          }}
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
+            <Search className="h-5 w-5 shrink-0 text-[var(--ui-muted)]" />
+            <input
+              ref={props.inputRef}
+              className="h-11 min-w-0 flex-1 bg-transparent text-sm text-[var(--ui-text)] outline-none placeholder:text-[var(--ui-muted)]"
+              value={props.query}
+              placeholder="搜索…"
+              onChange={event => props.setQuery(event.target.value)}
+              onKeyDown={event => {
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                event.preventDefault()
+                props.onRun(event.currentTarget.value)
+              }}
+            />
+            {props.query ? (
+              <button className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[var(--ui-muted)] hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]" type="button" onClick={props.onClear} title="清除搜索">
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+          <div className="relative border-l border-[var(--ui-border)]" ref={scopeMenuRef}>
+            <button
+              className={`grid h-11 w-11 place-items-center rounded-r-[0.7rem] text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface-muted)] ${scopeMenuOpen ? 'bg-[var(--ui-surface-muted)] text-[var(--ui-text)]' : ''}`}
+              type="button"
+              title="搜索范围"
+              aria-label="搜索范围"
+              aria-expanded={scopeMenuOpen}
+              onClick={() => setScopeMenuOpen(open => !open)}
+            >
+              <ChevronDown className={`h-4 w-4 transition ${scopeMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {scopeMenuOpen ? (
+              <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[80] w-44 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-raised)] p-2 shadow-[0_18px_50px_var(--ui-shadow-strong)]">
+                {([
+                  ['book', '全书'],
+                  ['unit', '当前章节'],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-[var(--ui-text-soft)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]"
+                    type="button"
+                    onClick={() => {
+                      props.setScope(value)
+                      setScopeMenuOpen(false)
+                      props.inputRef.current?.focus()
+                    }}
+                  >
+                    <span className="grid h-4 w-4 place-items-center">{props.scope === value ? <Check className="h-4 w-4" /> : null}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </form>
       </div>
-      <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
-        {props.results.map((item, index) => (
-          <button
-            key={`${item.unitIndex}-${item.match}-${index}`}
-            type="button"
-            className="w-full rounded-lg border border-slate-200 bg-white p-3 text-left text-sm hover:border-blue-300 hover:bg-blue-50"
-            onClick={() => props.onNavigate(item)}
-          >
-            <div className="mb-1 flex items-center gap-2 text-xs text-slate-500">
-              <span>#{index + 1}</span>
-              <span className="truncate">{item.unitTitle || `${item.unitKind} ${item.unitIndex + 1}`}</span>
+      {props.bookSummary}
+      <div className="flex h-10 shrink-0 items-center justify-between border-y border-[var(--ui-border)] px-4">
+        <span className="text-xs text-[var(--ui-muted)]">{props.status}</span>
+        {props.results.length ? <span className="text-xs font-medium text-[var(--ui-accent-text)]">{props.results.length}</span> : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+        {groupedResults.length ? groupedResults.map(group => (
+          <section key={group.key} className="mb-5">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <h3 className="truncate text-sm font-semibold text-[var(--ui-text)]">{group.label}</h3>
+              <span className="ml-2 text-xs text-[var(--ui-muted)]">{group.items.length}</span>
             </div>
-            <p className="line-clamp-4 text-slate-700">{renderSearchExcerpt(item)}</p>
-          </button>
-        ))}
+            <div className="space-y-2">
+              {group.items.map(({ item, index }) => (
+                <button
+                  key={`${item.unitIndex}-${item.match}-${index}`}
+                  type="button"
+                  className="w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] p-3 text-left text-sm leading-6 text-[var(--ui-text-soft)] transition hover:border-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)]"
+                  onClick={() => props.onNavigate(item)}
+                >
+                  <p className="line-clamp-4">{renderSearchExcerpt(item)}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+        )) : (
+          <div className="px-3 py-10 text-center text-sm text-[var(--ui-muted)]">
+            {props.query ? '按 Enter 开始搜索' : '输入关键词后按 Enter 搜索'}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -2193,7 +2560,7 @@ function renderSearchExcerpt(item: SearchItem): ReactNode {
     <>
       {item.excerpt.startsWith('...') && <span>...</span>}
       <span>{item.before}</span>
-      <mark className="rounded bg-yellow-200 px-0.5 text-slate-900">{item.match}</mark>
+      <mark className="rounded bg-[var(--ui-accent-soft)] px-0.5 font-semibold text-[var(--ui-accent-text)]">{item.match}</mark>
       <span>{item.after}</span>
       {item.excerpt.endsWith('...') && <span>...</span>}
     </>
@@ -3575,8 +3942,8 @@ function CheckField({ label, checked, onChange }: { label: string; checked: bool
 
 function ProgressBar({ value }: { value: number }) {
   return (
-    <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-200">
-      <div className="h-full rounded-full bg-blue-600" style={{ width: `${Math.round(value * 100)}%` }} />
+    <div className="h-1 shrink-0 overflow-hidden bg-slate-200">
+      <div className="h-full bg-blue-600" style={{ width: `${Math.round(value * 100)}%` }} />
     </div>
   )
 }
@@ -3875,14 +4242,6 @@ function setDemoExtensionFeatureEnabled(
   }
 }
 
-function getInitialBookURL(): string {
-  try {
-    return new URL(window.location.href).searchParams.get('book')?.trim() ?? ''
-  } catch {
-    return ''
-  }
-}
-
 function createRebookApiUrl(serviceBaseUrl: string, path: string): string {
   const base = serviceBaseUrl.trim().replace(/\/+$/, '')
   const apiBase = /\/api$/i.test(base) ? base : `${base}/api`
@@ -3892,16 +4251,6 @@ function createRebookApiUrl(serviceBaseUrl: string, path: string): string {
 
 function getRebookServiceOrigin(serviceBaseUrl: string): string {
   return serviceBaseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')
-}
-
-function getFileNameFromURL(url: string): string {
-  try {
-    const pathname = new URL(url, window.location.href).pathname
-    const name = decodeURIComponent(pathname.split('/').filter(Boolean).pop() ?? '')
-    return name || 'book'
-  } catch {
-    return 'book'
-  }
 }
 
 function getChatCommandToken(input: string): string | null {
@@ -4359,7 +4708,20 @@ function splitVoiceList(value: string) {
 function formatLanguageMap(value: any): string {
   if (!value) return ''
   if (typeof value === 'string') return value
-  return value.en || value.zh || Object.values(value)[0] as string || ''
+  return value['zh-CN'] || value.zh || value.en || Object.values(value)[0] as string || ''
+}
+
+function formatBookContributors(value: any): string {
+  if (!value) return ''
+  const contributors = Array.isArray(value) ? value : [value]
+  return contributors.map((contributor: any) => {
+    if (typeof contributor === 'string') return contributor.trim()
+    return formatLanguageMap(contributor?.name).trim()
+  }).filter(Boolean).join(', ')
+}
+
+function titleFromBookFileName(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || '未命名书籍'
 }
 
 function flattenTOCItems(items: any[]): any[] {
@@ -4719,6 +5081,12 @@ function panelButtonClass(active: boolean) {
   return active
     ? `${toolbarButtonClass} bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] ring-1 ring-[var(--ui-accent-softer)]`
     : toolbarButtonClass
+}
+
+function sidebarToolButtonClass(active: boolean) {
+  return active
+    ? `${iconButtonClass} bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] ring-1 ring-[var(--ui-accent-softer)]`
+    : iconButtonClass
 }
 
 export default ReaderWorkspace

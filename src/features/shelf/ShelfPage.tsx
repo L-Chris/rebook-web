@@ -9,36 +9,47 @@ import { useNavigate } from 'react-router-dom'
 import {
   BookOpen,
   Cloud,
+  HardDrive,
   Loader2,
+  LogIn,
+  LogOut,
+  Menu,
+  Moon,
+  Plus,
   Search,
+  Settings,
+  Sun,
   Trash2,
-  Upload,
+  UserRound,
 } from 'lucide-react'
+import { useAuth } from '../auth/AuthContext'
+import { useAppTheme } from '../theme/ThemeContext'
 import {
   apiRequest,
-  apiUrl,
-  type ImportJob,
+  assetUrl,
   type ShelfItem,
   type ShelfList,
 } from '../../lib/api'
+import {
+  importLocalBook,
+  isLocalBookId,
+  listLocalBooks,
+  removeLocalBook,
+} from '../../lib/local-library'
 
-const STATUS_TABS = [
-  ['all', '全部'],
-  ['reading', '在读'],
-  ['wantToRead', '想读'],
-  ['finished', '已读'],
-  ['archived', '归档'],
-] as const
+const SUPPORTED_BOOKS = '.epub,.pdf,.mobi,.azw,.azw3,.fb2,.fbz,.cbz'
 
 export function ShelfPage() {
+  const auth = useAuth()
+  const { theme, toggleTheme } = useAppTheme()
   const navigate = useNavigate()
   const fileInput = useRef<HTMLInputElement>(null)
-  const [data, setData] = useState<ShelfList | null>(null)
-  const [status, setStatus] = useState('all')
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [items, setItems] = useState<ShelfItem[]>([])
   const [query, setQuery] = useState('')
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -46,252 +57,335 @@ export function ShelfPage() {
     setLoading(true)
     setError('')
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: '24',
-      })
-      if (status !== 'all') params.set('status', status)
-      if (query.trim()) params.set('query', query.trim())
-      setData(await apiRequest<ShelfList>(`/shelf/items?${params}`))
+      const localItems = await listLocalBooks(query)
+      let cloudItems: ShelfItem[] = []
+      if (auth.user) {
+        try {
+          const params = new URLSearchParams({ page: '1', pageSize: '100' })
+          if (query.trim()) params.set('query', query.trim())
+          const cloud = await apiRequest<ShelfList>(`/shelf/items?${params}`)
+          cloudItems = cloud.items
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : '云端书架加载失败')
+        }
+      }
+      setItems([...localItems, ...cloudItems])
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '书架加载失败')
+      setError(reason instanceof Error ? reason.message : '本地书架加载失败')
     } finally {
       setLoading(false)
     }
-  }, [page, query, status])
+  }, [auth.user, query])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const upload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
+  useEffect(() => {
+    if (!menuOpen) return
+    const closeMenu = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [menuOpen])
+
+  const importBooks = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || [])
     event.target.value = ''
-    if (!file) return
+    if (!files.length) return
     setUploading(true)
     setError('')
-    setNotice(`正在上传 ${file.name}…`)
+    setNotice(`正在导入 ${files.length} 本书…`)
     try {
-      const form = new FormData()
-      form.append('file', file)
-      const job = await apiRequest<ImportJob>('/shelf/uploads', {
-        method: 'POST',
-        body: form,
-      })
-      const completed = await waitForImport(job.id, setNotice)
+      const imported: ShelfItem[] = []
+      for (const file of files) imported.push(await importLocalBook(file))
       await load()
-      if (completed.bookId) {
-        navigate(`/reader/${completed.bookId}`)
-      }
+      setNotice(`${files.length} 本书已保存在此浏览器`)
+      if (imported.length === 1) navigate(`/reader/${imported[0].id}`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '上传失败')
+      setError(reason instanceof Error ? reason.message : '导入失败')
       setNotice('')
     } finally {
       setUploading(false)
     }
   }
 
-  const changeStatus = async (item: ShelfItem, nextStatus: string) => {
-    await apiRequest(`/shelf/items/${item.id}`, {
-      method: 'PATCH',
-      json: { status: nextStatus },
-    })
-    await load()
-  }
-
   const removeItem = async (item: ShelfItem) => {
     if (!window.confirm(`确定把《${item.title}》移出书架吗？`)) return
-    await apiRequest(`/shelf/items/${item.id}`, {
-      method: 'DELETE',
-      json: {},
-    })
-    await load()
+    try {
+      if (isLocalBookId(item.id)) {
+        await removeLocalBook(item.id)
+      } else {
+        await apiRequest(`/shelf/items/${item.id}`, {
+          method: 'DELETE',
+          json: {},
+        })
+      }
+      await load()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '移除失败')
+    }
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-7 md:px-7 md:py-10">
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-sm font-medium text-teal-700">MY LIBRARY</p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">我的书架</h1>
-          <p className="mt-2 text-sm text-slate-500">在任意设备继续上次的阅读位置。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <input
-            ref={fileInput}
-            className="hidden"
-            type="file"
-            accept=".epub,.pdf,.mobi,.azw,.azw3,.fb2,.fbz,.cbz"
-            onChange={upload}
-          />
+    <main className="h-full overflow-y-auto bg-[var(--library-bg)] text-[var(--library-text)]">
+      <input
+        ref={fileInput}
+        className="hidden"
+        type="file"
+        accept={SUPPORTED_BOOKS}
+        multiple
+        onChange={importBooks}
+      />
+
+      <header className="sticky top-0 z-40 border-b border-[var(--library-border)] bg-[var(--library-header)] px-3 py-3 backdrop-blur-xl md:px-5">
+        <div className="flex items-center gap-2.5">
+          <label className="flex h-11 min-w-0 flex-1 items-center gap-3 rounded-full bg-[var(--library-control)] px-4 transition focus-within:ring-2 focus-within:ring-[var(--library-border-strong)]">
+            <Search className="h-5 w-5 shrink-0 text-[var(--library-muted)]" />
+            <input
+              className="min-w-0 flex-1 bg-transparent text-sm text-[var(--library-text)] outline-none placeholder:text-[var(--library-muted)]"
+              placeholder={`搜索 ${items.length} 本书…`}
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+            />
+          </label>
+
+          <span className="hidden h-7 w-px bg-[var(--library-border-strong)] sm:block" />
           <button
-            className="inline-flex h-10 items-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:opacity-60"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-[var(--library-muted)] transition hover:bg-[var(--library-hover)] hover:text-[var(--library-text)] disabled:opacity-50"
+            type="button"
+            title="导入本地书籍"
+            aria-label="导入本地书籍"
             disabled={uploading}
             onClick={() => fileInput.current?.click()}
           >
-            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            上传书籍
+            {uploading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-6 w-6" />}
           </button>
-          <button
-            className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800"
-            onClick={() => navigate('/settings/cloud-drives')}
-          >
-            <Cloud className="h-4 w-4" />
-            WebDAV
-          </button>
-        </div>
-      </div>
 
-      <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-slate-200/80 bg-white/90 p-3 shadow-sm md:flex-row md:items-center md:justify-between">
-        <div className="flex max-w-full gap-1 overflow-x-auto">
-          {STATUS_TABS.map(([key, label]) => (
+          <div className="relative" ref={menuRef}>
             <button
-              key={key}
-              className={`whitespace-nowrap rounded-xl px-3.5 py-2 text-sm font-medium transition ${
-                status === key
-                  ? 'bg-slate-900 text-white'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl transition ${
+                menuOpen
+                  ? 'bg-[var(--library-active)] text-[var(--library-text-on-active)]'
+                  : 'text-[var(--library-muted)] hover:bg-[var(--library-hover)] hover:text-[var(--library-text)]'
               }`}
-              onClick={() => {
-                setStatus(key)
-                setPage(1)
-              }}
+              type="button"
+              aria-label="打开菜单"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen(open => !open)}
             >
-              {label}
-              <span className={`ml-1.5 text-xs ${status === key ? 'text-slate-300' : 'text-slate-400'}`}>
-                {data?.counts[key] ?? 0}
-              </span>
+              <Menu className="h-5 w-5" />
             </button>
-          ))}
-        </div>
-        <label className="flex h-10 min-w-0 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 md:w-72">
-          <Search className="h-4 w-4 shrink-0 text-slate-400" />
-          <input
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
-            placeholder="搜索书名或作者"
-            value={query}
-            onChange={event => {
-              setQuery(event.target.value)
-              setPage(1)
-            }}
-          />
-        </label>
-      </div>
-
-      {notice ? (
-        <div className="mt-5 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">
-          {notice}
-        </div>
-      ) : null}
-      {error ? (
-        <div className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div className="grid min-h-80 place-items-center text-teal-700">
-          <Loader2 className="h-7 w-7 animate-spin" />
-        </div>
-      ) : data?.items.length ? (
-        <>
-          <div className="mt-7 grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-            {data.items.map(item => (
-              <article key={item.id} className="group min-w-0">
-                <button
-                  className="relative block aspect-[3/4.25] w-full overflow-hidden rounded-2xl bg-gradient-to-br from-slate-200 to-slate-300 text-left shadow-[0_12px_28px_rgba(15,23,42,.12)] transition duration-200 group-hover:-translate-y-1 group-hover:shadow-[0_20px_40px_rgba(15,23,42,.18)]"
-                  onClick={() => navigate(`/reader/${item.id}`)}
-                >
-                  {item.coverUrl ? (
-                    <img className="h-full w-full object-cover" src={apiUrl(item.coverUrl.replace(/^\/api/, ''))} alt="" />
-                  ) : (
-                    <div className="flex h-full flex-col justify-between p-4 text-slate-700">
-                      <BookOpen className="h-7 w-7 opacity-50" />
-                      <div>
-                        <div className="line-clamp-4 font-serif text-lg font-semibold leading-snug">{item.title}</div>
-                        <div className="mt-2 line-clamp-2 text-xs opacity-70">{item.author || item.sourceType.toUpperCase()}</div>
+            {menuOpen ? (
+              <div className="absolute right-0 top-12 w-64 overflow-hidden rounded-2xl border border-[var(--library-border)] bg-[var(--library-surface-raised)] p-2 shadow-[0_24px_70px_var(--library-menu-shadow)]">
+                {auth.user ? (
+                  <div className="mb-1 flex items-center gap-3 border-b border-[var(--library-border)] px-3 py-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--library-control)] text-[var(--library-muted)]">
+                      <UserRound className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-[var(--library-text)]">
+                        {auth.user.displayName || auth.user.email}
                       </div>
+                      <div className="mt-0.5 text-xs text-[var(--library-muted)]">云端书架已连接</div>
                     </div>
-                  )}
-                  {item.progress > 0 ? (
-                    <div className="absolute inset-x-0 bottom-0 h-1.5 bg-black/20">
-                      <div className="h-full bg-teal-400" style={{ width: `${Math.round(item.progress * 100)}%` }} />
-                    </div>
-                  ) : null}
-                  <span className="absolute right-2 top-2 rounded-full bg-black/55 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-white backdrop-blur">
-                    {item.storageProvider === 'webdav' ? 'WebDAV' : item.sourceType}
-                  </span>
-                </button>
-
-                <div className="mt-3 min-w-0">
-                  <button
-                    className="line-clamp-2 text-left text-sm font-semibold leading-5 text-slate-900 hover:text-teal-800"
-                    onClick={() => navigate(`/reader/${item.id}`)}
-                  >
-                    {item.title}
-                  </button>
-                  <p className="mt-1 truncate text-xs text-slate-500">
-                    {item.author || '未知作者'} · {Math.round(item.progress * 100)}%
-                  </p>
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <select
-                      className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 outline-none"
-                      value={item.status}
-                      onChange={event => void changeStatus(item, event.target.value)}
-                    >
-                      <option value="reading">在读</option>
-                      <option value="wantToRead">想读</option>
-                      <option value="finished">已读</option>
-                      <option value="archived">归档</option>
-                    </select>
-                    <button
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-red-50 hover:text-red-600"
-                      title="移出书架"
-                      onClick={() => void removeItem(item)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
                   </div>
+                ) : (
+                  <MenuAction
+                    icon={<LogIn className="h-5 w-5" />}
+                    label="登录"
+                    onClick={() => navigate('/login', { state: { from: '/' } })}
+                  />
+                )}
+                <div className="my-1 border-y border-[var(--library-border)] py-1">
+                  <MenuAction
+                    icon={theme === 'light' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+                    label={theme === 'light' ? 'Light Mode' : 'Dark Mode'}
+                    onClick={toggleTheme}
+                  />
                 </div>
-              </article>
-            ))}
-          </div>
-
-          {data.totalPages > 1 ? (
-            <div className="mt-10 flex justify-center gap-2">
-              <button className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm disabled:opacity-40" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button>
-              <span className="px-3 py-2 text-sm text-slate-500">{page} / {data.totalPages}</span>
-              <button className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm disabled:opacity-40" disabled={page >= data.totalPages} onClick={() => setPage(value => value + 1)}>下一页</button>
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <div className="mt-7 grid min-h-96 place-items-center rounded-3xl border border-dashed border-slate-300 bg-white/60 px-6 text-center">
-          <div>
-            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-slate-100 text-slate-400">
-              <BookOpen className="h-7 w-7" />
-            </span>
-            <h2 className="mt-4 text-lg font-semibold text-slate-900">书架还是空的</h2>
-            <p className="mt-2 text-sm text-slate-500">上传本地电子书，或者从 WebDAV 导入。</p>
+                <MenuAction
+                  icon={<Settings className="h-5 w-5" />}
+                  label="设置"
+                  onClick={() => navigate('/settings')}
+                />
+                {auth.user ? (
+                  <MenuAction
+                    icon={<LogOut className="h-5 w-5" />}
+                    label="退出登录"
+                    onClick={() => void auth.logout().then(() => setMenuOpen(false))}
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
-      )}
-    </div>
+      </header>
+
+      <div className="px-3 pb-10 pt-5 md:px-5 md:pt-7">
+        {notice ? (
+          <div className="mb-5 rounded-xl border border-[var(--library-success-border)] bg-[var(--library-success-bg)] px-4 py-3 text-sm text-[var(--library-success-text)]">
+            {notice}
+          </div>
+        ) : null}
+        {error ? (
+          <div className="mb-5 rounded-xl border border-[var(--library-error-border)] bg-[var(--library-error-bg)] px-4 py-3 text-sm text-[var(--library-error-text)]">
+            {error}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="grid min-h-72 place-items-center text-[var(--library-muted)]">
+            <Loader2 className="h-7 w-7 animate-spin" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-x-5 gap-y-8 sm:grid-cols-[repeat(auto-fill,minmax(175px,1fr))] lg:grid-cols-[repeat(auto-fill,minmax(190px,1fr))]">
+            {items.map(item => (
+              <BookCard
+                key={item.id}
+                item={item}
+                onOpen={() => navigate(`/reader/${item.id}`)}
+                onRemove={() => void removeItem(item)}
+              />
+            ))}
+            {!query ? (
+              <button
+                className="group min-w-0 text-left"
+                type="button"
+                onClick={() => fileInput.current?.click()}
+              >
+                <span className="grid aspect-[2/3] w-full place-items-center bg-[var(--library-surface-raised)] text-[var(--library-muted)] shadow-[0_8px_24px_var(--library-shadow)] transition group-hover:-translate-y-1 group-hover:text-[var(--library-text)]">
+                  <Plus className="h-12 w-12 stroke-[1.2]" />
+                </span>
+                <span className="mt-3 block text-sm font-medium text-[var(--library-muted)]">导入本地书籍</span>
+                <span className="mt-1 block text-xs text-[var(--library-faint)]">保存在此浏览器</span>
+              </button>
+            ) : null}
+          </div>
+        )}
+
+        {!loading && query && !items.length ? (
+          <div className="py-20 text-center text-sm text-[var(--library-muted)]">没有找到匹配的书籍</div>
+        ) : null}
+      </div>
+    </main>
   )
 }
 
-async function waitForImport(
-  jobId: string,
-  setNotice: (message: string) => void,
-) {
-  for (let attempt = 0; attempt < 600; attempt += 1) {
-    const job = await apiRequest<ImportJob>(`/shelf/import-jobs/${jobId}`)
-    setNotice(`正在导入书籍… ${job.progress}%`)
-    if (job.status === 'completed') return job
-    if (job.status === 'failed') {
-      throw new Error(job.errorMessage || '书籍导入失败')
-    }
-    await new Promise(resolve => window.setTimeout(resolve, 1000))
-  }
-  throw new Error('书籍导入超时')
+function BookCard({
+  item,
+  onOpen,
+  onRemove,
+}: {
+  item: ShelfItem
+  onOpen(): void
+  onRemove(): void
+}) {
+  const local = isLocalBookId(item.id)
+  const progress = Math.round(item.progress * 100)
+  return (
+    <article className="group min-w-0">
+      <div className="relative">
+        <button
+          className="relative block aspect-[2/3] w-full overflow-hidden rounded-[3px] bg-[var(--library-surface-raised)] text-left shadow-[0_10px_24px_var(--library-shadow)] transition duration-200 group-hover:-translate-y-1 group-hover:shadow-[0_18px_34px_var(--library-menu-shadow)]"
+          type="button"
+          onClick={onOpen}
+        >
+          {item.coverUrl ? (
+            <img
+              className="h-full w-full object-cover"
+              src={assetUrl(item.coverUrl)}
+              alt={`${item.title}封面`}
+            />
+          ) : (
+            <span
+              className="flex h-full flex-col justify-between p-[12%]"
+              style={{ background: coverBackground(item.id) }}
+            >
+              <BookOpen className="h-5 w-5 text-white/55" />
+              <span>
+                <span className="line-clamp-5 block font-serif text-[clamp(1.05rem,1.5vw,1.45rem)] font-semibold leading-tight text-white drop-shadow-sm">
+                  {item.title}
+                </span>
+                <span className="mt-3 line-clamp-2 block text-xs text-white/70">
+                  {item.author || item.sourceType.toUpperCase()}
+                </span>
+              </span>
+            </span>
+          )}
+          {progress > 0 ? (
+            <span className="absolute inset-x-0 bottom-0 h-1 bg-black/25">
+              <span className="block h-full bg-teal-400" style={{ width: `${progress}%` }} />
+            </span>
+          ) : null}
+        </button>
+        <button
+          className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/65 text-zinc-300 opacity-0 backdrop-blur transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus:opacity-100"
+          type="button"
+          title="移出书架"
+          aria-label={`移除${item.title}`}
+          onClick={onRemove}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+      <button
+        className="mt-3 block w-full truncate text-left text-sm font-semibold text-[var(--library-text)] transition hover:text-[var(--library-accent-text)]"
+        type="button"
+        onClick={onOpen}
+      >
+        {item.title}
+      </button>
+      <div className="mt-1 flex items-center justify-between gap-2 text-xs text-[var(--library-muted)]">
+        <span>{progress}%</span>
+        <span className="inline-flex items-center gap-1">
+          {local ? <HardDrive className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
+          {local ? '本地' : '云端'}
+        </span>
+      </div>
+    </article>
+  )
+}
+
+function MenuAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick(): void
+}) {
+  return (
+    <button
+      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[var(--library-text)] transition hover:bg-[var(--library-hover)]"
+      type="button"
+      onClick={onClick}
+    >
+      <span className="text-[var(--library-muted)]">{icon}</span>
+      {label}
+    </button>
+  )
+}
+
+function coverBackground(id: string) {
+  const palettes = [
+    ['#173f5f', '#20639b'],
+    ['#5f2c3e', '#9b4b5f'],
+    ['#345b43', '#6b8f71'],
+    ['#5a462f', '#9c7a4f'],
+    ['#3e355b', '#7567a8'],
+    ['#354d52', '#5c7c81'],
+  ]
+  const index = Array.from(id).reduce((sum, value) => sum + value.charCodeAt(0), 0) % palettes.length
+  const [start, end] = palettes[index]
+  return `linear-gradient(145deg, ${start}, ${end})`
 }

@@ -5,6 +5,61 @@
   --font-serif: Georgia, Cambria, "Times New Roman", serif;
 }
 
+:root,
+html[data-app-theme='light'] {
+  --library-bg: #f4f4f2;
+  --library-header: rgba(244, 244, 242, 0.92);
+  --library-surface: #ffffff;
+  --library-surface-raised: #ffffff;
+  --library-control: #e9e9e7;
+  --library-hover: rgba(24, 24, 27, 0.07);
+  --library-active: #d8d8d6;
+  --library-text: #202020;
+  --library-text-on-active: #18181b;
+  --library-muted: #71717a;
+  --library-faint: #a1a1aa;
+  --library-border: rgba(24, 24, 27, 0.1);
+  --library-border-strong: rgba(24, 24, 27, 0.2);
+  --library-accent: #0f766e;
+  --library-accent-soft: rgba(15, 118, 110, 0.1);
+  --library-accent-text: #0f766e;
+  --library-shadow: rgba(24, 24, 27, 0.08);
+  --library-menu-shadow: rgba(24, 24, 27, 0.18);
+  --library-success-bg: rgba(13, 148, 136, 0.09);
+  --library-success-border: rgba(13, 148, 136, 0.24);
+  --library-success-text: #0f766e;
+  --library-error-bg: rgba(220, 38, 38, 0.08);
+  --library-error-border: rgba(220, 38, 38, 0.2);
+  --library-error-text: #b91c1c;
+}
+
+html[data-app-theme='dark'] {
+  --library-bg: #292929;
+  --library-header: rgba(41, 41, 41, 0.94);
+  --library-surface: #242424;
+  --library-surface-raised: #202020;
+  --library-control: rgba(255, 255, 255, 0.065);
+  --library-hover: rgba(255, 255, 255, 0.1);
+  --library-active: #f4f4f5;
+  --library-text: #f4f4f5;
+  --library-text-on-active: #18181b;
+  --library-muted: #a1a1aa;
+  --library-faint: #71717a;
+  --library-border: rgba(255, 255, 255, 0.08);
+  --library-border-strong: rgba(255, 255, 255, 0.18);
+  --library-accent: #2dd4bf;
+  --library-accent-soft: rgba(45, 212, 191, 0.12);
+  --library-accent-text: #5eead4;
+  --library-shadow: rgba(0, 0, 0, 0.2);
+  --library-menu-shadow: rgba(0, 0, 0, 0.52);
+  --library-success-bg: rgba(45, 212, 191, 0.1);
+  --library-success-border: rgba(45, 212, 191, 0.2);
+  --library-success-text: #99f6e4;
+  --library-error-bg: rgba(248, 113, 113, 0.1);
+  --library-error-border: rgba(248, 113, 113, 0.2);
+  --library-error-text: #fecaca;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -19,7 +74,7 @@ body,
 
 body {
   overflow: hidden;
-  background: #eef1f5;
+  background: var(--library-bg);
   color: #111827;
   font-family: var(--font-sans);
 }
