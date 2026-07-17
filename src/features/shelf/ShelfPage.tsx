@@ -247,7 +247,7 @@ export function ShelfPage() {
             <Loader2 className="h-7 w-7 animate-spin" />
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-x-5 gap-y-8 sm:grid-cols-[repeat(auto-fill,minmax(175px,1fr))] lg:grid-cols-[repeat(auto-fill,minmax(190px,1fr))]">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(128px,160px))] gap-x-5 gap-y-7">
             {items.map(item => (
               <BookCard
                 key={item.id}

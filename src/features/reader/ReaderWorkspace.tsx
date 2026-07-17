@@ -81,11 +81,21 @@ import {
   updateLocalBookMetadata,
   updateLocalBookProgress,
 } from '../../lib/local-library'
+import {
+  CJK_FONT_OPTIONS,
+  MONOSPACE_FONT_OPTIONS,
+  READER_FONT_DEFAULTS,
+  SANS_SERIF_FONT_OPTIONS,
+  SERIF_FONT_OPTIONS,
+  ensureReaderFontsLoaded,
+  getReaderFontFamilies,
+  type ReaderDefaultFont,
+} from '../../lib/reader-fonts'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
 type SidebarView = 'toc' | 'search'
-type SettingsSection = 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
+type SettingsSection = 'font' | 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
 type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
 
@@ -95,6 +105,12 @@ interface DemoConfig {
   fixedPainter: string
   reflowablePageFit: ReflowablePageFitMode
   fontSize: string
+  defaultFont: ReaderDefaultFont
+  defaultCJKFont: string
+  serifFont: string
+  sansSerifFont: string
+  monospaceFont: string
+  overrideBookFonts: boolean
   theme: BuiltInReaderThemeName
   hyphenate: boolean
   debug: boolean
@@ -358,6 +374,8 @@ const defaultConfig: DemoConfig = {
   fixedPainter: 'canvas',
   reflowablePageFit: 'viewport',
   fontSize: '16px',
+  ...READER_FONT_DEFAULTS,
+  overrideBookFonts: false,
   theme: 'normal',
   hyphenate: true,
   debug: false,
@@ -653,6 +671,7 @@ function ReaderWorkspace({
   const currentFileRef = useRef<File | null>(null)
   const bookCoverUrlRef = useRef<string | null>(null)
   const progressSaveTimerRef = useRef<number | null>(null)
+  const readerResetIdRef = useRef(0)
   const pendingProgressRef = useRef<{
     progress: number
     locator: ReturnType<typeof createShelfLocator>
@@ -667,7 +686,7 @@ function ReaderWorkspace({
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
   const [extensionRuntimeStatus, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('reading')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('font')
   const [book, setBook] = useState<any>(null)
   const [libraryItem, setLibraryItem] = useState<ShelfItem | null>(null)
   const [bookTitle, setBookTitle] = useState('')
@@ -707,6 +726,26 @@ function ReaderWorkspace({
   }), [config.extensionCatalogJSON, config.extensionInstallations])
 
   configRef.current = config
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    let cancelled = false
+    void ensureReaderFontsLoaded(draftConfig).then(() => {
+      if (!cancelled) readerRef.current?.setStyles?.(getReaderStyles(draftConfig))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    settingsOpen,
+    draftConfig.defaultFont,
+    draftConfig.defaultCJKFont,
+    draftConfig.serifFont,
+    draftConfig.sansSerifFont,
+    draftConfig.monospaceFont,
+    draftConfig.overrideBookFonts,
+    draftConfig.fontSize,
+  ])
 
   useEffect(() => {
     try {
@@ -1174,6 +1213,9 @@ function ReaderWorkspace({
   }, [appendDebug, scheduleShelfProgress])
 
   const resetReader = useCallback(async (nextConfig: DemoConfig, reopen = currentFileRef.current) => {
+    const resetId = ++readerResetIdRef.current
+    await ensureReaderFontsLoaded(nextConfig)
+    if (resetId !== readerResetIdRef.current) return
     const previous = readerRef.current
     if (previous) previous.destroy()
     if (viewerRef.current) viewerRef.current.textContent = ''
@@ -1359,6 +1401,14 @@ function ReaderWorkspace({
     saveConfig(next)
     setSettingsOpen(false)
     await resetReader(next)
+  }
+
+  const closeSettings = () => {
+    setSettingsOpen(false)
+    setDraftConfig(config)
+    void ensureReaderFontsLoaded(config).then(() => {
+      readerRef.current?.setStyles?.(getReaderStyles(config))
+    })
   }
 
   const uploadCurrentBookForStoryMemory = async (uploadConfig: DemoConfig) => {
@@ -1669,7 +1719,7 @@ function ReaderWorkspace({
           <>
             <button
               type="button"
-              className="absolute inset-0 z-[60] bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
+              className={`absolute inset-0 z-[60] bg-slate-950/20 transition-opacity ${sidebarPinned ? 'lg:hidden' : ''}`}
               aria-label="关闭侧边栏"
               onClick={() => setSidebarOpen(false)}
             />
@@ -1710,7 +1760,7 @@ function ReaderWorkspace({
           </>
         )}
 
-        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--ui-surface)] p-0 [@media(hover:none)]:pt-14">
+        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--ui-surface)] p-0 [@media(hover:none)]:pt-11">
           <Header
             busy={busy}
             bookTitle={bookTitle}
@@ -1724,6 +1774,7 @@ function ReaderWorkspace({
             onToggleSidebar={() => setSidebarOpen(value => !value)}
             onOpenSettings={() => {
               setDraftConfig(config)
+              setSettingsSection('font')
               setSettingsOpen(true)
             }}
             onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
@@ -1812,7 +1863,7 @@ function ReaderWorkspace({
           storyUploadBusy={storyUploadBusy}
           storyUploadStatus={storyUploadStatus}
           onUploadCurrentBook={uploadCurrentBookForStoryMemory}
-          onClose={() => setSettingsOpen(false)}
+          onClose={closeSettings}
           onApply={() => void applyConfig()}
         />
       )}
@@ -1882,14 +1933,14 @@ function Header(props: {
   const visible = !hoverCapable || revealed || menuOpen
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-50 h-14">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-50 h-11">
       <div
         className="pointer-events-auto absolute inset-x-0 top-0 h-7"
         aria-hidden="true"
         onPointerEnter={reveal}
       />
       <header
-        className={`absolute inset-x-0 top-0 grid h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-[var(--ui-border)] bg-white/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
+        className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-[var(--ui-border)] bg-white/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
           visible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'
         }`}
         onPointerEnter={reveal}
@@ -1916,9 +1967,6 @@ function Header(props: {
       <div className="flex items-center justify-end gap-1">
         <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title="Chat">
           <MessageSquareText className="h-4 w-4" />
-        </button>
-        <button className={iconButtonClass} type="button" onClick={props.onOpenSettings} title="阅读设置">
-          <span className="text-base font-semibold leading-none">Aa</span>
         </button>
         <div className="relative" ref={menuRef}>
           <button
@@ -1951,7 +1999,7 @@ function Header(props: {
               ) : null}
               <ReaderMenuAction
                 icon={<Settings className="h-4 w-4" />}
-                label="阅读设置"
+                label="设置"
                 onClick={() => {
                   setMenuOpen(false)
                   props.onOpenSettings()
@@ -2097,9 +2145,9 @@ function ReaderSidebar({
 
   return (
     <aside className={`absolute inset-y-0 left-0 z-[70] flex w-60 shrink-0 flex-col overflow-hidden border-r border-[var(--ui-border)] bg-white/92 shadow-2xl backdrop-blur-xl ${
-      pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-40'
+      pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-[70]'
     }`}>
-      <div className="flex h-14 shrink-0 items-center gap-1 border-b border-[var(--ui-border)] px-3">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-[var(--ui-border)] px-3">
         <button className={iconButtonClass} type="button" onClick={onClose} title="收起侧边栏">
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -2157,11 +2205,7 @@ function ReaderSidebar({
       ) : (
         <>
           <SidebarBookSummary title={bookTitle} author={bookAuthor} format={bookFormat} coverUrl={coverUrl} />
-          <div className="flex h-11 shrink-0 items-center justify-between border-y border-[var(--ui-border)] px-4">
-            <span className="text-sm font-semibold text-[var(--ui-text)]">目录</span>
-            <span className="text-xs text-[var(--ui-muted)]">{items.length}</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto py-2">
+          <div className="min-h-0 flex-1 overflow-auto border-t border-[var(--ui-border)] py-2">
             {items.length ? (
               <TOCTree
                 items={items}
@@ -2521,11 +2565,7 @@ function SearchPanel(props: {
         </form>
       </div>
       {props.bookSummary}
-      <div className="flex h-10 shrink-0 items-center justify-between border-y border-[var(--ui-border)] px-4">
-        <span className="text-xs text-[var(--ui-muted)]">{props.status}</span>
-        {props.results.length ? <span className="text-xs font-medium text-[var(--ui-accent-text)]">{props.results.length}</span> : null}
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-auto border-t border-[var(--ui-border)] px-3 py-3">
         {groupedResults.length ? groupedResults.map(group => (
           <section key={group.key} className="mb-5">
             <div className="mb-2 flex items-center justify-between px-1">
@@ -2545,11 +2585,13 @@ function SearchPanel(props: {
               ))}
             </div>
           </section>
-        )) : (
-          <div className="px-3 py-10 text-center text-sm text-[var(--ui-muted)]">
-            {props.query ? '按 Enter 开始搜索' : '输入关键词后按 Enter 搜索'}
+        )) : props.status === '正在搜索…' ? (
+          <div className="grid min-h-28 place-items-center text-[var(--ui-muted)]">
+            <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        )}
+        ) : props.status === '没有找到匹配内容。' ? (
+          <div className="px-3 py-10 text-center text-sm text-[var(--ui-muted)]">没有找到匹配内容</div>
+        ) : null}
       </div>
     </div>
   )
@@ -3493,18 +3535,19 @@ function SettingsDialog(props: {
   onApply(): void
 }) {
   const sections: Array<{ id: SettingsSection; label: string }> = [
-    { id: 'reading', label: 'Reading' },
-    { id: 'extensions', label: 'Extensions' },
-    { id: 'translation', label: 'Translation' },
-    { id: 'tts', label: 'Text to Speech' },
-    { id: 'chat', label: 'AI Chat' },
-    { id: 'debug', label: 'Debug' },
+    { id: 'font', label: '字体' },
+    { id: 'reading', label: '阅读' },
+    { id: 'extensions', label: '扩展' },
+    { id: 'translation', label: '翻译' },
+    { id: 'tts', label: '朗读' },
+    { id: 'chat', label: 'AI 对话' },
+    { id: 'debug', label: '调试' },
   ]
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/35 p-4">
       <div className="flex h-[min(760px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-lg bg-white shadow-2xl sm:flex-row">
         <aside className="w-full shrink-0 border-b border-slate-200 bg-slate-50 p-2 sm:w-56 sm:border-b-0 sm:border-r sm:p-3">
-          <div className="mb-3 px-2 text-sm font-semibold text-slate-900">Settings</div>
+          <div className="mb-3 px-2 text-sm font-semibold text-slate-900">设置</div>
           <nav className="flex gap-1 overflow-x-auto sm:block sm:space-y-1">
             {sections.map(section => (
               <button
@@ -3542,8 +3585,8 @@ function SettingsDialog(props: {
             />
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
-            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>Cancel</button>
-            <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700" type="button" onClick={props.onApply}>Apply</button>
+            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>取消</button>
+            <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700" type="button" onClick={props.onApply}>应用</button>
           </div>
         </section>
       </div>
@@ -3573,6 +3616,9 @@ function SettingsSectionForm({
   onUploadCurrentBook(config: DemoConfig): Promise<{ bookId: string; title?: string }>
 }) {
   const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
+  if (section === 'font') {
+    return <FontSettingsForm config={config} setConfig={setConfig} />
+  }
   if (section === 'reading') {
     return (
       <FormGrid>
@@ -3580,7 +3626,6 @@ function SettingsSectionForm({
         <SelectField label="Spread" value={config.spread} onChange={value => update('spread', value)} options={[['2', 'Auto spread'], ['1', 'Single page']]} />
         <SelectField label="Page fit" value={config.reflowablePageFit} onChange={value => update('reflowablePageFit', value as ReflowablePageFitMode)} options={[['viewport', 'Viewport'], ['paper', 'Paper page'], ['auto', 'Auto']]} />
         <SelectField label="Fixed painter" value={config.fixedPainter} onChange={value => update('fixedPainter', value)} options={[['auto', 'Auto'], ['canvas', 'Canvas 2D'], ['webgpu', 'WebGPU']]} />
-        <SelectField label="Font size" value={config.fontSize} onChange={value => update('fontSize', value)} options={[['14px', 'Small'], ['16px', 'Medium'], ['18px', 'Large'], ['20px', 'X-Large']]} />
         <SelectField label="Theme" value={config.theme} onChange={value => update('theme', value as DemoConfig['theme'])} options={[['normal', 'Normal'], ['night', 'Night']]} />
         <CheckField label="Hyphenate" checked={config.hyphenate} onChange={value => update('hyphenate', value)} />
       </FormGrid>
@@ -3683,6 +3728,154 @@ function SettingsSectionForm({
     <FormGrid>
       <CheckField label="Debug logging" checked={config.debug} onChange={value => update('debug', value)} />
     </FormGrid>
+  )
+}
+
+function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig(config: DemoConfig): void }) {
+  const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
+  const families = getReaderFontFamilies(config)
+  const previewFamily = config.defaultFont === 'serif' ? families.serif : families.sansSerif
+
+  return (
+    <div className="-m-5 min-h-full bg-slate-50 p-5 sm:p-7">
+      <div className="mx-auto grid max-w-2xl gap-6">
+        <FontSettingsGroup title="字体类型">
+          <FontSelectRow
+            label="默认字体"
+            value={config.defaultFont}
+            options={[["serif", "衬线字体"], ["sans-serif", "无衬线字体"]]}
+            onChange={value => update('defaultFont', value as ReaderDefaultFont)}
+          />
+          <FontSelectRow
+            label="中文字体"
+            value={config.defaultCJKFont}
+            options={CJK_FONT_OPTIONS}
+            previewFamily={config.defaultCJKFont}
+            onChange={value => update('defaultCJKFont', value)}
+          />
+        </FontSettingsGroup>
+
+        <FontSettingsGroup title="字体选择">
+          <FontSelectRow
+            label="衬线字体"
+            value={config.serifFont}
+            options={SERIF_FONT_OPTIONS}
+            previewFamily={config.serifFont}
+            onChange={value => update('serifFont', value)}
+          />
+          <FontSelectRow
+            label="无衬线字体"
+            value={config.sansSerifFont}
+            options={SANS_SERIF_FONT_OPTIONS}
+            previewFamily={config.sansSerifFont}
+            onChange={value => update('sansSerifFont', value)}
+          />
+          <FontSelectRow
+            label="等宽字体"
+            value={config.monospaceFont}
+            options={MONOSPACE_FONT_OPTIONS}
+            previewFamily={config.monospaceFont}
+            onChange={value => update('monospaceFont', value)}
+          />
+        </FontSettingsGroup>
+
+        <FontSettingsGroup title="文字显示">
+          <FontSelectRow
+            label="字号"
+            value={config.fontSize}
+            options={[["14px", "14 px"], ["16px", "16 px"], ["18px", "18 px"], ["20px", "20 px"], ["22px", "22 px"]]}
+            onChange={value => update('fontSize', value)}
+          />
+          <FontToggleRow
+            label="覆盖书籍字体"
+            description="开启后忽略书籍自带字体，统一使用上面的设置"
+            checked={config.overrideBookFonts}
+            onChange={value => update('overrideBookFonts', value)}
+          />
+        </FontSettingsGroup>
+
+        <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4">
+          <div className="mb-2 text-xs font-medium text-slate-500">字体预览</div>
+          <p className="m-0 text-xl leading-9 text-slate-900" style={{ fontFamily: previewFamily }}>
+            阅读让思想抵达更远的地方。The quick brown fox jumps over the lazy dog.
+          </p>
+        </div>
+        <p className="m-0 text-xs leading-5 text-slate-500">
+          字体通过 CDN 按需加载；网络不可用时会自动回退到设备字体。设置仅影响可重排格式，PDF 与 CBZ 保持原始版面。
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function FontSettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2.5 px-1 text-xs font-medium text-slate-500">{title}</h3>
+      <div className="divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        {children}
+      </div>
+    </section>
+  )
+}
+
+function FontSelectRow({
+  label,
+  value,
+  options,
+  previewFamily,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: Array<[string, string]>
+  previewFamily?: string
+  onChange(value: string): void
+}) {
+  return (
+    <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+      <span className="text-sm font-medium text-slate-800">{label}</span>
+      <select
+        className="min-w-36 max-w-[58%] rounded-xl border-0 bg-slate-100 px-3 py-2 text-right text-sm text-slate-900 outline-none ring-0 focus:ring-2 focus:ring-blue-200"
+        value={value}
+        style={previewFamily ? { fontFamily: `"${previewFamily}", sans-serif` } : undefined}
+        onChange={event => onChange(event.target.value)}
+      >
+        {options.map(([optionValue, optionLabel]) => (
+          <option key={optionValue} value={optionValue}>{optionLabel}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function FontToggleRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string
+  description: string
+  checked: boolean
+  onChange(value: boolean): void
+}) {
+  return (
+    <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-slate-800">{label}</span>
+        <span className="mt-0.5 block text-xs leading-5 text-slate-500">{description}</span>
+      </span>
+      <span className={`relative h-6 w-11 shrink-0 rounded-full transition ${checked ? 'bg-blue-600' : 'bg-slate-200'}`}>
+        <input
+          className="peer sr-only"
+          type="checkbox"
+          checked={checked}
+          onChange={event => onChange(event.target.checked)}
+        />
+        <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition ${checked ? 'left-6' : 'left-1'}`} />
+      </span>
+    </label>
   )
 }
 
@@ -4637,15 +4830,17 @@ function splitLooseStrongText(value: string): MarkdownNode[] {
   return nodes
 }
 
-function getReaderStyles(config: DemoConfig) {
+function getReaderStyles(config: DemoConfig): RendererStyles {
   return {
     theme: config.theme,
     fontSize: config.fontSize,
+    fontFamilies: getReaderFontFamilies(config),
+    overrideBookFonts: config.overrideBookFonts,
     hyphenate: config.hyphenate,
     lineHeight: 1.72,
     minColumnWidth: '360px',
     maxColumnWidth: '960px',
-    margin: '36px',
+    margin: '44px',
     reflowablePageFit: config.reflowablePageFit,
   }
 }
