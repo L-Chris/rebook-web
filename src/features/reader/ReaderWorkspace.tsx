@@ -57,7 +57,6 @@ import {
   registry,
   resolveReadableContentUnitIndex,
   setRebookDebug,
-  type BuiltInReaderThemeName,
   type RebookExtension,
   type RebookExtensionCatalogEntry,
   type RebookExtensionCatalogItem,
@@ -91,6 +90,19 @@ import {
   getReaderFontFamilies,
   type ReaderDefaultFont,
 } from '../../lib/reader-fonts'
+import {
+  BUILT_IN_EXTENSION_DEFAULTS_VERSION,
+  READER_CONFIG_STORAGE_KEY,
+} from '../../lib/extension-marketplace'
+import { useAppTheme } from '../theme/ThemeContext'
+import {
+  iconButtonClass,
+  inputClass,
+  menuRowClass,
+  primaryButtonClass,
+  roundIconButtonClass,
+  toolbarButtonClass,
+} from '../../lib/ui-classes'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
@@ -111,7 +123,6 @@ interface DemoConfig {
   sansSerifFont: string
   monospaceFont: string
   overrideBookFonts: boolean
-  theme: BuiltInReaderThemeName
   hyphenate: boolean
   debug: boolean
   translate: boolean
@@ -145,6 +156,7 @@ interface DemoConfig {
   chatModel: string
   chatMaxContentChars: string
   chatPanelWidth: string
+  extensionDefaultsVersion: number
   extensionCatalogURL: string
   extensionCatalogJSON: string
   extensionInstallations: DemoExtensionInstallations
@@ -276,7 +288,7 @@ interface RebookDebugTools {
   book(): unknown
 }
 
-const CONFIG_KEY = 'rebook-web-config'
+const CONFIG_KEY = READER_CONFIG_STORAGE_KEY
 const MAX_SEARCH_RESULTS = 80
 const MAX_CHAT_REFERENCE_OPTIONS = 120
 const MAX_CHAT_REFERENCE_SUGGESTIONS = 8
@@ -284,9 +296,6 @@ const MAX_CHAT_REFERENCE_EXCERPT = 220
 const configuredRebookServiceUrl = String(import.meta.env.VITE_REBOOK_SERVICE_URL ?? '').trim()
 const defaultRebookServiceUrl = configuredRebookServiceUrl
   || (import.meta.env.DEV ? 'http://127.0.0.1:8083' : 'https://read.rethinkos.com/api')
-const iconButtonClass = 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)] disabled:cursor-not-allowed disabled:opacity-40'
-const toolbarButtonClass = 'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)] disabled:cursor-not-allowed disabled:opacity-40'
-const inputClass = 'min-w-0 rounded-lg border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] px-2.5 py-2 text-sm text-[var(--ui-text)] outline-none transition placeholder:text-[var(--ui-muted)] focus:border-[var(--ui-accent)] focus:ring-3 focus:ring-[var(--ui-accent-softer)]'
 
 interface ChatCommand {
   name: '/summary' | '/search' | '/rewrite' | '/extract' | '/story-index' | '/timeline' | '/profile' | '/relations' | '/entities'
@@ -376,7 +385,6 @@ const defaultConfig: DemoConfig = {
   fontSize: '16px',
   ...READER_FONT_DEFAULTS,
   overrideBookFonts: false,
-  theme: 'normal',
   hyphenate: true,
   debug: false,
   translate: false,
@@ -404,12 +412,13 @@ const defaultConfig: DemoConfig = {
   ttsMaleVoices: 'zh-CN-YunjianNeural, zh-CN-YunxiNeural',
   ttsFemaleVoices: 'zh-CN-XiaoyiNeural, zh-CN-XiaoxiaoNeural',
   ttsOtherVoice: 'zh-CN-XiaoxiaoNeural',
-  chat: false,
+  chat: true,
   chatBaseURL: '',
   chatAPIKey: '',
   chatModel: '',
   chatMaxContentChars: '6000',
   chatPanelWidth: '420',
+  extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
   extensionCatalogURL: '',
   extensionCatalogJSON: '',
   extensionInstallations: {},
@@ -682,6 +691,7 @@ function ReaderWorkspace({
 
   const [config, setConfig] = useState<DemoConfig>(() => loadConfig())
   const configRef = useRef(config)
+  const { theme: appTheme } = useAppTheme()
   const [draftConfig, setDraftConfig] = useState<DemoConfig>(config)
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
   const [extensionRuntimeStatus, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
@@ -727,11 +737,16 @@ function ReaderWorkspace({
 
   configRef.current = config
 
+  // The reader chrome and book content share the same app-level theme.
+  useEffect(() => {
+    readerRef.current?.setStyles?.(getReaderStyles(config, appTheme))
+  }, [appTheme])
+
   useEffect(() => {
     if (!settingsOpen) return
     let cancelled = false
     void ensureReaderFontsLoaded(draftConfig).then(() => {
-      if (!cancelled) readerRef.current?.setStyles?.(getReaderStyles(draftConfig))
+      if (!cancelled) readerRef.current?.setStyles?.(getReaderStyles(draftConfig, appTheme))
     })
     return () => {
       cancelled = true
@@ -1194,9 +1209,9 @@ function ReaderWorkspace({
       parserOptions,
       plugins: buildPlugins(cfg),
       fixedPainter: cfg.fixedPainter,
-      styles: getReaderStyles(cfg),
+      styles: getReaderStyles(cfg, appTheme),
     })
-  }, [buildPlugins])
+  }, [buildPlugins, appTheme])
 
   const wireReaderEvents = useCallback((reader: any) => {
     reader.on('relocate', (event: any) => {
@@ -1407,7 +1422,7 @@ function ReaderWorkspace({
     setSettingsOpen(false)
     setDraftConfig(config)
     void ensureReaderFontsLoaded(config).then(() => {
-      readerRef.current?.setStyles?.(getReaderStyles(config))
+      readerRef.current?.setStyles?.(getReaderStyles(config, appTheme))
     })
   }
 
@@ -1712,14 +1727,14 @@ function ReaderWorkspace({
   return (
     <div
       className="reader-shell flex h-full min-h-0 flex-col"
-      data-reader-theme={config.theme}
+      data-reader-theme={appTheme}
     >
       <main className="relative flex min-h-0 flex-1 overflow-hidden">
         {sidebarOpen && (
           <>
             <button
               type="button"
-              className={`absolute inset-0 z-[60] bg-slate-950/20 transition-opacity ${sidebarPinned ? 'lg:hidden' : ''}`}
+              className={`absolute inset-0 z-60 bg-overlay transition-opacity ${sidebarPinned ? 'lg:hidden' : ''}`}
               aria-label="关闭侧边栏"
               onClick={() => setSidebarOpen(false)}
             />
@@ -1760,12 +1775,13 @@ function ReaderWorkspace({
           </>
         )}
 
-        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--ui-surface)] p-0 [@media(hover:none)]:pt-11">
+        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-surface p-0 [@media(hover:none)]:pt-11">
           <Header
             busy={busy}
             bookTitle={bookTitle}
             sidebarOpen={sidebarOpen}
             activePanel={activePanel}
+            chatEnabled={config.chat}
             authenticated={authenticated}
             accountLabel={accountLabel}
             onExit={onExit}
@@ -1779,12 +1795,12 @@ function ReaderWorkspace({
             }}
             onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
           />
-          <div className="relative min-h-0 flex-1 overflow-hidden bg-[var(--ui-surface)]">
+          <div className="relative min-h-0 flex-1 overflow-hidden bg-surface">
             <div ref={viewerRef} id="viewer" />
             {!book && (
-              <div className="absolute inset-0 grid place-items-center bg-white/92 p-8">
-                <div className="max-w-md text-center text-sm text-[var(--ui-muted)]">
-                  {busy ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-[var(--ui-accent)]" /> : null}
+              <div className="absolute inset-0 grid place-items-center bg-surface/92 p-8">
+                <div className="max-w-md text-center text-ui-md text-muted">
+                  {busy ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin text-accent" /> : null}
                   {status}
                 </div>
               </div>
@@ -1797,7 +1813,7 @@ function ReaderWorkspace({
           <>
             <button
               type="button"
-              className="absolute inset-0 z-[60] bg-slate-950/35 backdrop-blur-[2px] lg:hidden"
+              className="absolute inset-0 z-60 bg-overlay lg:hidden"
               aria-label="Close panel"
               onClick={() => setActivePanel(null)}
             />
@@ -1876,6 +1892,7 @@ function Header(props: {
   bookTitle: string
   sidebarOpen: boolean
   activePanel: Panel
+  chatEnabled: boolean
   authenticated: boolean
   accountLabel: string
   onExit?: () => void
@@ -1940,7 +1957,7 @@ function Header(props: {
         onPointerEnter={reveal}
       />
       <header
-        className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-[var(--ui-border)] bg-white/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
+        className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-line bg-surface/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
           visible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'
         }`}
         onPointerEnter={reveal}
@@ -1959,15 +1976,17 @@ function Header(props: {
         </button>
       </div>
       <div className="min-w-0 text-center">
-        <div className="flex items-center justify-center gap-2 truncate text-sm font-semibold text-[var(--ui-text)]">
+        <div className="flex items-center justify-center gap-2 truncate text-ui-md font-semibold text-ink">
           {props.busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : null}
           <span className="truncate">{props.bookTitle || (props.busy ? '正在加载…' : '阅读器')}</span>
         </div>
       </div>
       <div className="flex items-center justify-end gap-1">
-        <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title="Chat">
-          <MessageSquareText className="h-4 w-4" />
-        </button>
+        {props.chatEnabled ? (
+          <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title="Chat">
+            <MessageSquareText className="h-4 w-4" />
+          </button>
+        ) : null}
         <div className="relative" ref={menuRef}>
           <button
             className={panelButtonClass(menuOpen)}
@@ -1980,11 +1999,11 @@ function Header(props: {
             <Menu className="h-4 w-4" />
           </button>
           {menuOpen ? (
-            <div className="absolute right-0 top-11 z-[60] w-60 overflow-hidden rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-raised)] p-2 text-left shadow-[0_18px_50px_var(--ui-shadow-strong)]">
+            <div className="absolute right-0 top-11 z-80 w-60 rounded-xl border border-line bg-surface-raised p-1.5 text-left shadow-menu animate-pop motion-reduce:animate-none">
               {props.authenticated ? (
-                <div className="mb-1 flex items-center gap-2.5 border-b border-[var(--ui-border)] px-3 py-2.5">
-                  <UserRound className="h-4 w-4 shrink-0 text-[var(--ui-muted)]" />
-                  <span className="truncate text-xs text-[var(--ui-muted-strong)]">{props.accountLabel}</span>
+                <div className="mb-1 flex items-center gap-2.5 border-b border-line px-3 py-2.5">
+                  <UserRound className="h-4 w-4 shrink-0 text-muted" />
+                  <span className="truncate text-ui-sm text-muted-strong">{props.accountLabel}</span>
                 </div>
               ) : null}
               {props.onExit ? (
@@ -2050,11 +2069,11 @@ function ReaderMenuAction({
 }) {
   return (
     <button
-      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-[var(--ui-text-soft)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]"
+      className={menuRowClass}
       type="button"
       onClick={onClick}
     >
-      <span className="text-[var(--ui-muted)]">{icon}</span>
+      <span className="text-muted">{icon}</span>
       {label}
     </button>
   )
@@ -2144,10 +2163,10 @@ function ReaderSidebar({
   }, [])
 
   return (
-    <aside className={`absolute inset-y-0 left-0 z-[70] flex w-60 shrink-0 flex-col overflow-hidden border-r border-[var(--ui-border)] bg-white/92 shadow-2xl backdrop-blur-xl ${
-      pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-[70]'
+    <aside className={`absolute inset-y-0 left-0 z-70 flex w-60 shrink-0 flex-col overflow-hidden border-r border-line bg-surface/92 shadow-dialog backdrop-blur-xl ${
+      pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-70'
     }`}>
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-[var(--ui-border)] px-3">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line px-3">
         <button className={iconButtonClass} type="button" onClick={onClose} title="收起侧边栏">
           <PanelLeft className="h-4 w-4" />
         </button>
@@ -2205,7 +2224,7 @@ function ReaderSidebar({
       ) : (
         <>
           <SidebarBookSummary title={bookTitle} author={bookAuthor} format={bookFormat} coverUrl={coverUrl} />
-          <div className="min-h-0 flex-1 overflow-auto border-t border-[var(--ui-border)] py-2">
+          <div className="min-h-0 flex-1 overflow-auto border-t border-line py-2">
             {items.length ? (
               <TOCTree
                 items={items}
@@ -2216,7 +2235,7 @@ function ReaderSidebar({
                 onToggle={toggleItem}
               />
             ) : (
-              <p className="px-4 py-5 text-sm text-[var(--ui-muted)]">书籍加载后将在这里显示目录。</p>
+              <p className="px-4 py-5 text-ui-md text-muted">书籍加载后将在这里显示目录。</p>
             )}
           </div>
         </>
@@ -2238,7 +2257,7 @@ function SidebarBookSummary({
 }) {
   return (
     <div className="flex min-h-28 shrink-0 items-center gap-3 px-4 py-4">
-      <div className="grid h-[4.5rem] w-12 shrink-0 place-items-center overflow-hidden rounded-md bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] shadow-md">
+      <div className="grid h-[4.5rem] w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-accent-soft text-accent-text shadow-menu">
         {coverUrl ? (
           <img className="h-full w-full object-cover" src={coverUrl} alt="" />
         ) : (
@@ -2246,10 +2265,10 @@ function SidebarBookSummary({
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="line-clamp-2 text-base font-semibold leading-snug text-[var(--ui-text)]">{title}</div>
-        <div className="mt-1 truncate text-sm text-[var(--ui-muted)]">{author || format.toUpperCase() || '电子书'}</div>
+        <div className="line-clamp-2 text-ui-lg font-semibold text-ink">{title}</div>
+        <div className="mt-1 truncate text-ui-md text-muted">{author || format.toUpperCase() || '电子书'}</div>
       </div>
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[var(--ui-muted)]" title={`${title}${author ? ` · ${author}` : ''}`}>
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted" title={`${title}${author ? ` · ${author}` : ''}`}>
         <Info className="h-4 w-4" />
       </span>
     </div>
@@ -2288,20 +2307,20 @@ function TOCTree({
           <li key={itemId} data-toc-depth={depth} data-toc-expanded={hasChildren ? String(expanded) : undefined}>
             <div
               className={[
-                'group mx-2 flex min-w-0 items-center gap-1 rounded-lg pr-2 text-sm transition',
+                'group mx-2 flex min-w-0 items-center gap-1 rounded-lg pr-2 text-ui-md transition-colors duration-150',
                 isDemoTOCItemActive(item)
-                  ? 'bg-[var(--ui-accent-soft)] font-medium text-[var(--ui-accent-text)]'
+                  ? 'bg-accent-soft font-medium text-accent-text'
                   : branchActive
-                    ? 'bg-[var(--ui-surface-muted)] text-[var(--ui-accent-text)]'
-                    : 'text-[var(--ui-text-soft)] hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]',
-                disabled ? 'opacity-45' : '',
+                    ? 'bg-surface-muted text-accent-text'
+                    : 'text-ink-soft hover:bg-surface-muted hover:text-ink',
+                disabled ? 'opacity-40' : '',
               ].join(' ')}
               style={{ paddingLeft: 8 + depth * 14 }}
             >
               {hasChildren ? (
                 <button
                   type="button"
-                  className="grid h-8 w-6 shrink-0 place-items-center text-[var(--ui-muted)] transition hover:text-[var(--ui-text)]"
+                  className="grid h-8 w-6 shrink-0 place-items-center text-muted transition-colors duration-150 hover:text-ink"
                   onClick={() => onToggle(itemId)}
                   aria-expanded={expanded}
                   title={expanded ? 'Collapse section' : 'Expand section'}
@@ -2316,7 +2335,7 @@ function TOCTree({
                 disabled={disabled}
                 onClick={() => target ? onNavigate(target) : undefined}
                 className={[
-                  'min-w-0 flex-1 truncate py-2 text-left transition',
+                  'min-w-0 flex-1 truncate py-2 text-left transition-colors duration-150',
                   disabled ? 'cursor-not-allowed' : '',
                 ].join(' ')}
                 title={getDemoTOCItemLabel(item)}
@@ -2408,12 +2427,12 @@ function RightPanel(props: {
   const dragRef = useRef<{ right: number } | null>(null)
   return (
     <aside
-      className="absolute inset-y-0 right-0 z-[70] max-w-[92vw] shrink-0 border-l border-slate-200 bg-white shadow-2xl lg:relative lg:z-auto lg:shadow-none"
+      className="absolute inset-y-0 right-0 z-70 max-w-[92vw] shrink-0 border-l border-line bg-surface/92 shadow-dialog backdrop-blur-xl lg:relative lg:z-auto lg:shadow-none"
       style={{ width: props.width }}
     >
       {props.panel === 'chat' && (
         <div
-          className="absolute inset-y-0 left-0 z-10 hidden w-2 cursor-col-resize hover:bg-blue-200/50 lg:block"
+          className="absolute inset-y-0 left-0 z-10 hidden w-2 cursor-col-resize hover:bg-accent-soft lg:block"
           onPointerDown={event => {
             dragRef.current = { right: event.currentTarget.parentElement!.getBoundingClientRect().right }
             event.currentTarget.setPointerCapture(event.pointerId)
@@ -2428,8 +2447,8 @@ function RightPanel(props: {
         />
       )}
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-200 px-3">
-          <span className="text-sm font-semibold capitalize text-slate-900">{props.panel}</span>
+        <div className="flex h-11 shrink-0 items-center justify-between border-b border-line px-3">
+          <span className="text-ui-md font-semibold capitalize text-ink">{props.panel}</span>
           <div className="flex items-center gap-1">
             {props.panel === 'chat' && props.onClearChat ? (
               <button className={iconButtonClass} type="button" onClick={props.onClearChat} title="Clear chat">
@@ -2500,19 +2519,19 @@ function SearchPanel(props: {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-[var(--ui-border)] p-2">
+      <div className="shrink-0 border-b border-line p-2">
         <form
-          className="flex items-stretch overflow-visible rounded-xl border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] focus-within:border-[var(--ui-accent)] focus-within:ring-3 focus-within:ring-[var(--ui-accent-softer)]"
+          className="flex items-stretch overflow-visible rounded-xl border border-line-strong bg-surface focus-within:border-accent focus-within:ring-2 focus-within:ring-accent-softer"
           onSubmit={event => {
             event.preventDefault()
             props.onRun(props.inputRef.current?.value ?? props.query)
           }}
         >
           <div className="flex min-w-0 flex-1 items-center gap-2 px-3">
-            <Search className="h-5 w-5 shrink-0 text-[var(--ui-muted)]" />
+            <Search className="h-5 w-5 shrink-0 text-muted" />
             <input
               ref={props.inputRef}
-              className="h-11 min-w-0 flex-1 bg-transparent text-sm text-[var(--ui-text)] outline-none placeholder:text-[var(--ui-muted)]"
+              className="h-11 min-w-0 flex-1 bg-transparent text-ui-md text-ink outline-none placeholder:text-muted"
               value={props.query}
               placeholder="搜索…"
               onChange={event => props.setQuery(event.target.value)}
@@ -2523,31 +2542,31 @@ function SearchPanel(props: {
               }}
             />
             {props.query ? (
-              <button className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[var(--ui-muted)] hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]" type="button" onClick={props.onClear} title="清除搜索">
+              <button className={roundIconButtonClass} type="button" onClick={props.onClear} title="清除搜索">
                 <X className="h-4 w-4" />
               </button>
             ) : null}
           </div>
-          <div className="relative border-l border-[var(--ui-border)]" ref={scopeMenuRef}>
+          <div className="relative border-l border-line" ref={scopeMenuRef}>
             <button
-              className={`grid h-11 w-11 place-items-center rounded-r-[0.7rem] text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface-muted)] ${scopeMenuOpen ? 'bg-[var(--ui-surface-muted)] text-[var(--ui-text)]' : ''}`}
+              className={`grid h-11 w-11 place-items-center rounded-r-xl text-muted-strong transition-colors duration-150 hover:bg-surface-muted ${scopeMenuOpen ? 'bg-surface-muted text-ink' : ''}`}
               type="button"
               title="搜索范围"
               aria-label="搜索范围"
               aria-expanded={scopeMenuOpen}
               onClick={() => setScopeMenuOpen(open => !open)}
             >
-              <ChevronDown className={`h-4 w-4 transition ${scopeMenuOpen ? 'rotate-180' : ''}`} />
+              <ChevronDown className={`h-4 w-4 transition-transform duration-150 ${scopeMenuOpen ? 'rotate-180' : ''}`} />
             </button>
             {scopeMenuOpen ? (
-              <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[80] w-44 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-raised)] p-2 shadow-[0_18px_50px_var(--ui-shadow-strong)]">
+              <div className="absolute right-0 top-[calc(100%+0.5rem)] z-80 w-44 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none">
                 {([
                   ['book', '全书'],
                   ['unit', '当前章节'],
                 ] as const).map(([value, label]) => (
                   <button
                     key={value}
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-[var(--ui-text-soft)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]"
+                    className={menuRowClass}
                     type="button"
                     onClick={() => {
                       props.setScope(value)
@@ -2565,19 +2584,19 @@ function SearchPanel(props: {
         </form>
       </div>
       {props.bookSummary}
-      <div className="min-h-0 flex-1 overflow-auto border-t border-[var(--ui-border)] px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-auto border-t border-line px-3 py-3">
         {groupedResults.length ? groupedResults.map(group => (
           <section key={group.key} className="mb-5">
             <div className="mb-2 flex items-center justify-between px-1">
-              <h3 className="truncate text-sm font-semibold text-[var(--ui-text)]">{group.label}</h3>
-              <span className="ml-2 text-xs text-[var(--ui-muted)]">{group.items.length}</span>
+              <h3 className="truncate text-ui-md font-semibold text-ink">{group.label}</h3>
+              <span className="ml-2 text-ui-sm text-muted">{group.items.length}</span>
             </div>
             <div className="space-y-2">
               {group.items.map(({ item, index }) => (
                 <button
                   key={`${item.unitIndex}-${item.match}-${index}`}
                   type="button"
-                  className="w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] p-3 text-left text-sm leading-6 text-[var(--ui-text-soft)] transition hover:border-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)]"
+                  className="w-full rounded-xl border border-line bg-surface p-3 text-left text-ui-md text-ink-soft transition-colors duration-150 hover:border-accent hover:bg-accent-soft"
                   onClick={() => props.onNavigate(item)}
                 >
                   <p className="line-clamp-4">{renderSearchExcerpt(item)}</p>
@@ -2586,11 +2605,11 @@ function SearchPanel(props: {
             </div>
           </section>
         )) : props.status === '正在搜索…' ? (
-          <div className="grid min-h-28 place-items-center text-[var(--ui-muted)]">
+          <div className="grid min-h-28 place-items-center text-muted">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
         ) : props.status === '没有找到匹配内容。' ? (
-          <div className="px-3 py-10 text-center text-sm text-[var(--ui-muted)]">没有找到匹配内容</div>
+          <div className="px-3 py-10 text-center text-ui-md text-muted">没有找到匹配内容</div>
         ) : null}
       </div>
     </div>
@@ -2602,7 +2621,7 @@ function renderSearchExcerpt(item: SearchItem): ReactNode {
     <>
       {item.excerpt.startsWith('...') && <span>...</span>}
       <span>{item.before}</span>
-      <mark className="rounded bg-[var(--ui-accent-soft)] px-0.5 font-semibold text-[var(--ui-accent-text)]">{item.match}</mark>
+      <mark className="rounded-lg bg-accent-soft px-0.5 font-semibold text-accent-text">{item.match}</mark>
       <span>{item.after}</span>
       {item.excerpt.endsWith('...') && <span>...</span>}
     </>
@@ -2681,9 +2700,9 @@ function ChatPanel(props: {
           <div
             key={index}
             className={[
-              'rounded-lg border p-3 text-sm',
-              message.role === 'user' ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white',
-              message.pending ? 'text-slate-500' : '',
+              'rounded-lg border p-3 text-ui-md',
+              message.role === 'user' ? 'border-line bg-accent-soft' : 'border-line bg-surface',
+              message.pending ? 'text-muted' : '',
             ].join(' ')}
           >
             {message.attachments?.length ? (
@@ -2693,7 +2712,7 @@ function ChatPanel(props: {
                     key={attachment.id}
                     src={attachment.previewUrl}
                     alt={attachment.name}
-                    className="h-20 w-20 rounded-lg border border-slate-200 object-cover"
+                    className="h-20 w-20 rounded-lg border border-line object-cover"
                   />
                 ))}
               </div>
@@ -2716,12 +2735,12 @@ function ChatPanel(props: {
             ) : null}
           </div>
         )) : (
-          <div className="rounded-lg border border-dashed border-slate-200 p-4 text-sm text-slate-500">
+          <div className="rounded-lg border border-dashed border-line p-4 text-ui-md text-muted">
             Ask for a chapter summary, explain a passage, or search for a concept.
           </div>
         )}
       </div>
-      <div className="border-t border-slate-200 p-3">
+      <div className="border-t border-line p-3">
         <input
           ref={imageInputRef}
           hidden
@@ -2733,47 +2752,47 @@ function ChatPanel(props: {
             event.currentTarget.value = ''
           }}
         />
-        <div className="relative rounded-3xl border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] p-1.5 text-[var(--ui-text)] shadow-[0_8px_24px_var(--ui-shadow)]">
+        <div className="relative rounded-xl border border-line bg-surface p-1.5 text-ink shadow-menu focus-within:ring-2 focus-within:ring-accent-softer">
           {referenceSuggestions.length ? (
-            <div className="absolute inset-x-0 bottom-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-lg border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] shadow-[0_16px_36px_var(--ui-shadow-strong)]">
+            <div className="absolute inset-x-0 bottom-[calc(100%+0.5rem)] z-80 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none">
               {referenceSuggestions.map((reference, index) => (
                 <button
                   key={reference.id}
                   type="button"
                   className={[
-                    'flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-accent-soft)] hover:text-[var(--ui-text)]',
-                    index === selectedCommandIndex ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-text)]' : '',
+                    `${menuRowClass} min-w-0`,
+                    index === selectedCommandIndex ? 'bg-accent-soft text-accent-text' : '',
                   ].join(' ')}
                   onMouseDown={event => {
                     event.preventDefault()
                     applyReference(reference)
                   }}
                 >
-                  <span className="shrink-0 rounded-full bg-[var(--ui-accent-soft)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--ui-accent-text)]">
+                  <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-ui-xs font-semibold text-accent-text">
                     {reference.kind === 'section' ? '章节' : '段落'}
                   </span>
-                  <span className="max-w-[45%] shrink-0 truncate font-mono text-sm font-bold text-[var(--ui-text)]">{reference.label}</span>
-                  <span className="min-w-0 truncate text-[13px]">{reference.description}</span>
+                  <span className="max-w-[45%] shrink-0 truncate font-mono text-ui-md font-semibold text-ink">{reference.label}</span>
+                  <span className="min-w-0 truncate">{reference.description}</span>
                 </button>
               ))}
             </div>
           ) : commandSuggestions.length ? (
-            <div className="absolute inset-x-0 bottom-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-lg border border-[var(--ui-border-strong)] bg-[var(--ui-surface)] shadow-[0_16px_36px_var(--ui-shadow-strong)]">
+            <div className="absolute inset-x-0 bottom-[calc(100%+0.5rem)] z-80 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none">
               {commandSuggestions.map((command, index) => (
                 <button
                   key={command.name}
                   type="button"
                   className={[
-                    'flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-accent-soft)] hover:text-[var(--ui-text)]',
-                    index === selectedCommandIndex ? 'bg-[var(--ui-accent-soft)] text-[var(--ui-text)]' : '',
+                    `${menuRowClass} min-w-0`,
+                    index === selectedCommandIndex ? 'bg-accent-soft text-accent-text' : '',
                   ].join(' ')}
                   onMouseDown={event => {
                     event.preventDefault()
                     applyCommand(command)
                   }}
                 >
-                  <span className="max-w-[45%] shrink-0 truncate font-mono text-sm font-bold text-[var(--ui-text)]">{command.name}</span>
-                  <span className="min-w-0 truncate text-[13px]">{command.description}</span>
+                  <span className="max-w-[45%] shrink-0 truncate font-mono text-ui-md font-semibold text-ink">{command.name}</span>
+                  <span className="min-w-0 truncate">{command.description}</span>
                 </button>
               ))}
             </div>
@@ -2784,11 +2803,11 @@ function ChatPanel(props: {
           {props.attachments.length ? (
             <div className="flex flex-wrap gap-2 px-1 pb-2 pt-1">
               {props.attachments.map(attachment => (
-                <div key={attachment.id} className="relative h-16 w-16 overflow-hidden rounded-lg border border-[var(--ui-border)]">
+                <div key={attachment.id} className="relative h-16 w-16 overflow-hidden rounded-lg border border-line">
                   <img className="h-full w-full object-cover" src={attachment.previewUrl} alt={attachment.name} />
                   <button
                     type="button"
-                    className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/80 text-white"
+                    className="absolute right-1 top-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-ink/80 text-surface"
                     onClick={() => props.onRemoveAttachment(attachment.id)}
                     title="Remove image"
                   >
@@ -2800,7 +2819,7 @@ function ChatPanel(props: {
           ) : null}
           <div className="flex items-end gap-1.5">
             <button
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface-muted)] hover:text-[var(--ui-text)]"
+              className={roundIconButtonClass}
               type="button"
               onClick={() => imageInputRef.current?.click()}
               title="Attach image"
@@ -2809,7 +2828,7 @@ function ChatPanel(props: {
             </button>
             <textarea
               ref={inputRef}
-              className="max-h-36 min-h-9 min-w-0 flex-1 resize-none border-0 bg-transparent px-1 py-2 leading-[1.45] text-[var(--ui-text)] outline-none placeholder:text-[var(--ui-muted)]"
+              className="max-h-36 min-h-9 min-w-0 flex-1 resize-none border-0 bg-transparent px-1 py-2 text-ui-md text-ink outline-none placeholder:text-muted"
               value={props.input}
               rows={1}
               placeholder="Ask about this book"
@@ -2862,7 +2881,7 @@ function ChatPanel(props: {
               }}
             />
             <button
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--ui-accent)] text-white transition hover:bg-[var(--ui-accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-accent text-ui-md font-medium text-accent-contrast transition-colors duration-150 hover:bg-accent-hover disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer"
               type="button"
               disabled={props.busy || (!props.input.trim() && !props.attachments.length && !props.references.length)}
               onClick={props.onSend}
@@ -2883,15 +2902,15 @@ function ChatReferenceChips({ references, onRemove }: { references: ChatReferenc
       {references.map(reference => (
         <span
           key={reference.id}
-          className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--ui-accent-softer)] bg-[var(--ui-accent-soft)] px-1.5 py-1 text-xs text-[var(--ui-accent-text)]"
+          className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-accent-softer bg-accent-soft px-1.5 py-1 text-ui-sm text-accent-text"
           title={reference.excerpt || reference.description}
         >
-          <span className="shrink-0 font-bold text-[var(--ui-accent)]">{reference.kind === 'section' ? '章节' : '段落'}</span>
+          <span className="shrink-0 font-semibold text-accent">{reference.kind === 'section' ? '章节' : '段落'}</span>
           <span className="min-w-0 truncate">{reference.label}</span>
           {onRemove ? (
             <button
               type="button"
-              className="inline-flex shrink-0 items-center justify-center text-[var(--ui-muted)] hover:text-[var(--ui-accent-text)]"
+              className="inline-flex shrink-0 items-center justify-center text-muted hover:text-accent-text"
               onClick={() => onRemove(reference.id)}
               title="Remove reference"
             >
@@ -3264,26 +3283,26 @@ function ChatCodePreview({
   const effectiveFrameHeight = collapsed ? Math.min(frameHeight, 260) : frameHeight
 
   return (
-    <div className="mb-3 overflow-hidden rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface)]">
-      <div className="flex items-center justify-between border-b border-[var(--ui-border)] bg-[var(--ui-surface-muted)] px-2.5 py-1.5 text-xs font-semibold text-[var(--ui-muted-strong)]">
+    <div className="mb-3 overflow-hidden rounded-lg border border-line bg-surface">
+      <div className="flex items-center justify-between border-b border-line bg-surface-muted px-2.5 py-1.5 text-ui-sm font-semibold text-muted-strong">
         <span>{preview.label}</span>
         <div className="inline-flex items-center gap-1.5">
           {tab === 'preview' ? (
             <button
               type="button"
-              className="inline-flex h-6.5 w-6.5 items-center justify-center rounded-full text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-border)] hover:text-[var(--ui-text)]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-strong transition-colors duration-150 hover:bg-track hover:text-ink"
               onClick={() => setCollapsed(value => !value)}
               title={collapsed ? 'Expand preview height' : 'Collapse preview height'}
             >
               {collapsed ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
             </button>
           ) : null}
-          <div className="inline-flex gap-1 rounded-full bg-[var(--ui-border)] p-0.5">
+          <div className="inline-flex gap-1 rounded-full bg-track p-0.5">
             <button
               type="button"
               className={[
-                'rounded-full px-2 py-1 text-xs font-semibold text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface)] hover:text-[var(--ui-text)]',
-                tab === 'preview' ? 'bg-[var(--ui-surface)] text-[var(--ui-text)]' : '',
+                'rounded-full px-2 py-1 text-ui-sm font-semibold transition-colors duration-150',
+                tab === 'preview' ? 'bg-surface-raised text-ink shadow-sm' : 'text-muted hover:text-ink',
               ].join(' ')}
               onClick={() => setTab('preview')}
             >
@@ -3292,8 +3311,8 @@ function ChatCodePreview({
             <button
               type="button"
               className={[
-                'rounded-full px-2 py-1 text-xs font-semibold text-[var(--ui-muted-strong)] transition hover:bg-[var(--ui-surface)] hover:text-[var(--ui-text)]',
-                tab === 'code' ? 'bg-[var(--ui-surface)] text-[var(--ui-text)]' : '',
+                'rounded-full px-2 py-1 text-ui-sm font-semibold transition-colors duration-150',
+                tab === 'code' ? 'bg-surface-raised text-ink shadow-sm' : 'text-muted hover:text-ink',
               ].join(' ')}
               onClick={() => setTab('code')}
             >
@@ -3305,7 +3324,7 @@ function ChatCodePreview({
       {tab === 'preview' ? (
         <iframe
           ref={frameRef}
-          className="block w-full border-0 bg-[var(--ui-surface)]"
+          className="block w-full border-0 bg-surface"
           sandbox="allow-same-origin"
           srcDoc={PREVIEW_SHELL_DOCUMENT}
           style={{ height: effectiveFrameHeight }}
@@ -3537,25 +3556,24 @@ function SettingsDialog(props: {
   const sections: Array<{ id: SettingsSection; label: string }> = [
     { id: 'font', label: '字体' },
     { id: 'reading', label: '阅读' },
-    { id: 'extensions', label: '扩展' },
-    { id: 'translation', label: '翻译' },
-    { id: 'tts', label: '朗读' },
-    { id: 'chat', label: 'AI 对话' },
-    { id: 'debug', label: '调试' },
   ]
+  if (props.config.translate) sections.push({ id: 'translation', label: '翻译' })
+  if (props.config.tts) sections.push({ id: 'tts', label: '朗读' })
+  if (props.config.chat) sections.push({ id: 'chat', label: 'AI 对话' })
+  sections.push({ id: 'debug', label: '调试' })
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/35 p-4">
-      <div className="flex h-[min(760px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-lg bg-white shadow-2xl sm:flex-row">
-        <aside className="w-full shrink-0 border-b border-slate-200 bg-slate-50 p-2 sm:w-56 sm:border-b-0 sm:border-r sm:p-3">
-          <div className="mb-3 px-2 text-sm font-semibold text-slate-900">设置</div>
+    <div className="fixed inset-0 z-90 grid place-items-center bg-overlay p-4">
+      <div className="flex h-[min(760px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-dialog sm:flex-row">
+        <aside className="w-full shrink-0 border-b border-line bg-surface-muted p-2 sm:w-56 sm:border-b-0 sm:border-r sm:p-3">
+          <div className="mb-3 px-2 text-ui-md font-semibold text-ink">设置</div>
           <nav className="flex gap-1 overflow-x-auto sm:block sm:space-y-1">
             {sections.map(section => (
               <button
                 key={section.id}
                 type="button"
                 className={[
-                  'block shrink-0 rounded-lg px-3 py-2 text-left text-sm sm:w-full',
-                  props.section === section.id ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-white',
+                  'block shrink-0 rounded-lg px-3 py-2 text-left text-ui-md sm:w-full',
+                  props.section === section.id ? 'bg-accent-soft font-medium text-accent-text' : 'text-ink-soft hover:bg-surface',
                 ].join(' ')}
                 onClick={() => props.setSection(section.id)}
               >
@@ -3565,13 +3583,13 @@ function SettingsDialog(props: {
           </nav>
         </aside>
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-14 items-center justify-between border-b border-slate-200 px-5">
-            <h2 className="text-base font-semibold text-slate-900">{sections.find(item => item.id === props.section)?.label}</h2>
+          <div className="flex h-11 items-center justify-between border-b border-line px-5">
+            <h2 className="text-ui-lg font-semibold text-ink">{sections.find(item => item.id === props.section)?.label}</h2>
             <button className={iconButtonClass} type="button" onClick={props.onClose}>
               <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-5">
+          <div className="min-h-0 flex-1 overflow-auto">
             <SettingsSectionForm
               section={props.section}
               setSection={props.setSection}
@@ -3584,9 +3602,9 @@ function SettingsDialog(props: {
               onUploadCurrentBook={props.onUploadCurrentBook}
             />
           </div>
-          <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+          <div className="flex justify-end gap-2 border-t border-line p-4">
             <button className={toolbarButtonClass} type="button" onClick={props.onClose}>取消</button>
-            <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700" type="button" onClick={props.onApply}>应用</button>
+            <button className={primaryButtonClass} type="button" onClick={props.onApply}>应用</button>
           </div>
         </section>
       </div>
@@ -3626,7 +3644,6 @@ function SettingsSectionForm({
         <SelectField label="Spread" value={config.spread} onChange={value => update('spread', value)} options={[['2', 'Auto spread'], ['1', 'Single page']]} />
         <SelectField label="Page fit" value={config.reflowablePageFit} onChange={value => update('reflowablePageFit', value as ReflowablePageFitMode)} options={[['viewport', 'Viewport'], ['paper', 'Paper page'], ['auto', 'Auto']]} />
         <SelectField label="Fixed painter" value={config.fixedPainter} onChange={value => update('fixedPainter', value)} options={[['auto', 'Auto'], ['canvas', 'Canvas 2D'], ['webgpu', 'WebGPU']]} />
-        <SelectField label="Theme" value={config.theme} onChange={value => update('theme', value as DemoConfig['theme'])} options={[['normal', 'Normal'], ['night', 'Night']]} />
         <CheckField label="Hyphenate" checked={config.hyphenate} onChange={value => update('hyphenate', value)} />
       </FormGrid>
     )
@@ -3644,8 +3661,6 @@ function SettingsSectionForm({
   if (section === 'translation') {
     return (
       <FormGrid>
-        <CheckField label="Enable" checked={config.translate} onChange={value => update('translate', value)} />
-        <CheckField label="Professional" checked={config.professionalTranslation} onChange={value => update('professionalTranslation', value)} />
         {config.professionalTranslation ? (
           <>
             <TextField label="Service URL" value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
@@ -3667,7 +3682,6 @@ function SettingsSectionForm({
   if (section === 'tts') {
     return (
       <FormGrid>
-        <CheckField label="Enable" checked={config.tts} onChange={value => update('tts', value)} />
         <TextField label="Endpoint" value={config.ttsEndpoint} onChange={value => update('ttsEndpoint', value)} />
         <TextField label="Provider" value={config.ttsProvider} onChange={value => update('ttsProvider', value)} />
         <TextField label="SFX provider" value={config.ttsSoundEffectProvider} onChange={value => update('ttsSoundEffectProvider', value)} />
@@ -3688,15 +3702,14 @@ function SettingsSectionForm({
   if (section === 'chat') {
     return (
       <FormGrid>
-        <CheckField label="Enable" checked={config.chat} onChange={value => update('chat', value)} />
         <TextField label="Base URL" value={config.chatBaseURL} onChange={value => update('chatBaseURL', value)} />
         <TextField label="API key" value={config.chatAPIKey} type="password" onChange={value => update('chatAPIKey', value)} />
         <TextField label="Model" value={config.chatModel} onChange={value => update('chatModel', value)} placeholder="gpt-4o-mini" />
         <TextField label="Content chars" value={config.chatMaxContentChars} type="number" onChange={value => update('chatMaxContentChars', value)} />
         <TextField label="Story service URL" value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
         <TextField label="Story book ID" value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
-        <div className="grid gap-2 rounded-lg border border-slate-200 p-3">
-          <div className="text-sm font-medium text-slate-700">
+        <div className="grid gap-2 rounded-xl border border-line bg-surface p-3">
+          <div className="text-ui-md font-medium text-ink-soft">
             Current file: {currentBookFileName || 'none'}
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -3712,13 +3725,13 @@ function SettingsSectionForm({
             >
               {storyUploadBusy ? 'Uploading...' : 'Upload current book'}
             </button>
-            <span className="text-xs text-slate-500">Uploads to /api/books/upload and fills Story book ID.</span>
+            <span className="text-ui-sm text-muted">Uploads to /api/books/upload and fills Story book ID.</span>
           </div>
           {storyUploadStatus ? (
-            <p className="text-xs leading-5 text-slate-600">{storyUploadStatus}</p>
+            <p className="text-ui-sm text-muted">{storyUploadStatus}</p>
           ) : null}
         </div>
-        <p className="col-span-full text-xs leading-5 text-slate-500">
+        <p className="col-span-full text-ui-sm text-muted">
           Story memory tools use the same rebook-service URL and Book ID as professional translation.
         </p>
       </FormGrid>
@@ -3737,7 +3750,7 @@ function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig
   const previewFamily = config.defaultFont === 'serif' ? families.serif : families.sansSerif
 
   return (
-    <div className="-m-5 min-h-full bg-slate-50 p-5 sm:p-7">
+    <div className="min-h-full bg-surface-muted p-5 sm:p-7">
       <div className="mx-auto grid max-w-2xl gap-6">
         <FontSettingsGroup title="字体类型">
           <FontSelectRow
@@ -3794,13 +3807,13 @@ function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig
           />
         </FontSettingsGroup>
 
-        <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4">
-          <div className="mb-2 text-xs font-medium text-slate-500">字体预览</div>
-          <p className="m-0 text-xl leading-9 text-slate-900" style={{ fontFamily: previewFamily }}>
+        <div className="rounded-xl border border-line bg-surface px-5 py-4">
+          <div className="mb-2 text-ui-sm font-medium text-muted">字体预览</div>
+          <p className="m-0 text-ui-xl text-ink" style={{ fontFamily: previewFamily }}>
             阅读让思想抵达更远的地方。The quick brown fox jumps over the lazy dog.
           </p>
         </div>
-        <p className="m-0 text-xs leading-5 text-slate-500">
+        <p className="m-0 text-ui-sm text-muted">
           字体通过 CDN 按需加载；网络不可用时会自动回退到设备字体。设置仅影响可重排格式，PDF 与 CBZ 保持原始版面。
         </p>
       </div>
@@ -3811,8 +3824,8 @@ function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig
 function FontSettingsGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <h3 className="mb-2.5 px-1 text-xs font-medium text-slate-500">{title}</h3>
-      <div className="divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <h3 className="mb-2.5 px-1 text-ui-sm font-medium text-muted">{title}</h3>
+      <div className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
         {children}
       </div>
     </section>
@@ -3834,18 +3847,43 @@ function FontSelectRow({
 }) {
   return (
     <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
-      <span className="text-sm font-medium text-slate-800">{label}</span>
-      <select
-        className="min-w-36 max-w-[58%] rounded-xl border-0 bg-slate-100 px-3 py-2 text-right text-sm text-slate-900 outline-none ring-0 focus:ring-2 focus:ring-blue-200"
+      <span className="text-ui-md font-medium text-ink-soft">{label}</span>
+      <Select
+        className="min-w-36 max-w-[58%]"
+        buttonClassName="border-transparent bg-surface-muted"
         value={value}
-        style={previewFamily ? { fontFamily: `"${previewFamily}", sans-serif` } : undefined}
-        onChange={event => onChange(event.target.value)}
-      >
-        {options.map(([optionValue, optionLabel]) => (
-          <option key={optionValue} value={optionValue}>{optionLabel}</option>
-        ))}
-      </select>
+        options={options}
+        ariaLabel={label}
+        previewFamily={previewFamily ? optionValue => `"${optionValue}", sans-serif` : undefined}
+        onChange={onChange}
+      />
     </label>
+  )
+}
+
+function Toggle({
+  checked,
+  onChange,
+  disabled,
+  ariaLabel,
+}: {
+  checked: boolean
+  onChange(value: boolean): void
+  disabled?: boolean
+  ariaLabel?: string
+}) {
+  return (
+    <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${checked ? 'bg-accent' : 'bg-track'} ${disabled ? 'opacity-40' : ''}`}>
+      <input
+        className="peer sr-only"
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onChange={event => onChange(event.target.checked)}
+      />
+      <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-surface-raised shadow-sm transition-transform duration-200 ${checked ? 'translate-x-5' : ''}`} />
+    </span>
   )
 }
 
@@ -3863,18 +3901,10 @@ function FontToggleRow({
   return (
     <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
       <span className="min-w-0">
-        <span className="block text-sm font-medium text-slate-800">{label}</span>
-        <span className="mt-0.5 block text-xs leading-5 text-slate-500">{description}</span>
+        <span className="block text-ui-md font-medium text-ink-soft">{label}</span>
+        <span className="mt-0.5 block text-ui-sm text-muted">{description}</span>
       </span>
-      <span className={`relative h-6 w-11 shrink-0 rounded-full transition ${checked ? 'bg-blue-600' : 'bg-slate-200'}`}>
-        <input
-          className="peer sr-only"
-          type="checkbox"
-          checked={checked}
-          onChange={event => onChange(event.target.checked)}
-        />
-        <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition ${checked ? 'left-6' : 'left-1'}`} />
-      </span>
+      <Toggle checked={checked} onChange={onChange} ariaLabel={label} />
     </label>
   )
 }
@@ -3918,12 +3948,12 @@ function ExtensionsSettings({
   }
 
   return (
-    <div className="grid gap-3">
-      <section className="rounded-lg border border-slate-200 bg-white p-4">
+    <div className="grid gap-3 p-5">
+      <section className="rounded-xl border border-line bg-surface p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-slate-900">Marketplace catalog</h3>
-            <p className="mt-1 text-sm text-slate-600">
+            <h3 className="text-ui-md font-semibold text-ink">Marketplace catalog</h3>
+            <p className="mt-1 text-ui-md text-muted">
               Load a schemaVersion 1 extension catalog. Installed marketplace entries are stored locally in this demo.
             </p>
           </div>
@@ -3950,10 +3980,10 @@ function ExtensionsSettings({
             onChange={value => setConfig({ ...config, extensionCatalogJSON: value })}
           />
           <p className={[
-            'text-xs',
+            'text-ui-sm',
             marketplaceCatalog.error || catalogStatus.startsWith('Catalog load failed')
-              ? 'text-red-600'
-              : 'text-slate-500',
+              ? 'text-danger'
+              : 'text-muted',
           ].join(' ')}>
             {marketplaceCatalog.error || catalogStatus || `${marketplaceCatalog.entries.length} marketplace extension(s) loaded.`}
           </p>
@@ -3964,31 +3994,31 @@ function ExtensionsSettings({
         const contributionBadges = getDemoExtensionContributionBadges(item.manifest)
         const runtimeStatus = extensionRuntimeStatus[item.manifest.id]
         return (
-          <article key={item.manifest.id} className="rounded-lg border border-slate-200 bg-white p-4">
+          <article key={item.manifest.id} className="rounded-xl border border-line bg-surface p-4">
             <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-start">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-sm font-semibold text-slate-900">
+                  <h3 className="text-ui-md font-semibold text-ink">
                     {item.manifest.displayName || item.manifest.name}
                   </h3>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                  <span className="rounded-full bg-surface-muted px-2 py-0.5 text-ui-sm font-medium text-muted">
                     {item.source || 'local'}
                   </span>
                   <span className={[
-                    'rounded-full px-2 py-0.5 text-xs font-medium',
+                    'rounded-full px-2 py-0.5 text-ui-sm font-medium',
                     !state.installed
-                      ? 'bg-slate-100 text-slate-500'
+                      ? 'bg-surface-muted text-muted'
                       : state.enabled
-                      ? state.configured ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                      : 'bg-slate-100 text-slate-600',
+                      ? state.configured ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
+                      : 'bg-surface-muted text-muted',
                   ].join(' ')}>
                     {!state.installed ? 'Available' : state.enabled ? state.configured ? 'Enabled' : 'Needs setup' : 'Disabled'}
                   </span>
                 </div>
-                <p className="mt-1 max-w-2xl text-sm text-slate-600">{item.manifest.description}</p>
+                <p className="mt-1 max-w-2xl text-ui-md text-muted">{item.manifest.description}</p>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {item.manifest.capabilities?.map(capability => (
-                    <span key={capability} className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
+                    <span key={capability} className="rounded-lg bg-accent-soft px-1.5 py-0.5 text-ui-xs font-medium text-accent-text">
                       {capability}
                     </span>
                   ))}
@@ -3996,21 +4026,21 @@ function ExtensionsSettings({
                 {contributionBadges.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {contributionBadges.map(badge => (
-                      <span key={badge} className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
+                      <span key={badge} className="rounded-lg bg-surface-muted px-1.5 py-0.5 text-ui-xs font-medium text-muted">
                         {badge}
                       </span>
                     ))}
                   </div>
                 ) : null}
-                <p className="mt-3 text-xs text-slate-500">{state.message}</p>
+                <p className="mt-3 text-ui-sm text-muted">{state.message}</p>
                 {state.installed && !isDemoExtensionFeatureControlled(item.manifest) ? (
                   <p className={[
-                    'mt-2 text-xs',
+                    'mt-2 text-ui-sm',
                     runtimeStatus?.state === 'loaded'
-                      ? 'text-emerald-700'
+                      ? 'text-success'
                       : runtimeStatus?.state === 'error'
-                      ? 'text-red-600'
-                      : 'text-slate-500',
+                      ? 'text-danger'
+                      : 'text-muted',
                   ].join(' ')}>
                     {runtimeStatus?.message || 'Enable this extension to load its runtime module.'}
                   </p>
@@ -4026,26 +4056,28 @@ function ExtensionsSettings({
                     >
                       Configure
                     </button>
-                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700">
+                    <label className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-ui-md font-medium text-ink-soft">
                       <span>{state.enabled ? 'On' : 'Off'}</span>
-                      <input
-                        type="checkbox"
+                      <Toggle
                         checked={state.enabled}
-                        onChange={event => setConfig(setDemoExtensionEnabled(config, item.manifest, event.target.checked))}
+                        ariaLabel={`Toggle ${item.manifest.displayName || item.manifest.name}`}
+                        onChange={value => setConfig(setDemoExtensionEnabled(config, item.manifest, value))}
                       />
                     </label>
-                    <button
-                      type="button"
-                      className={toolbarButtonClass}
-                      onClick={() => setConfig(uninstallDemoExtension(config, item.manifest))}
-                    >
-                      Uninstall
-                    </button>
+                    {item.source !== 'builtin' ? (
+                      <button
+                        type="button"
+                        className={toolbarButtonClass}
+                        onClick={() => setConfig(uninstallDemoExtension(config, item.manifest))}
+                      >
+                        Uninstall
+                      </button>
+                    ) : null}
                   </>
                 ) : (
                   <button
                     type="button"
-                    className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    className={primaryButtonClass}
                     onClick={() => setConfig(installDemoExtension(config, item.manifest))}
                   >
                     Install
@@ -4073,26 +4105,26 @@ function Footer({
 }) {
   if (!ttsEnabled) return null
   return (
-    <footer className="flex h-11 shrink-0 items-center gap-3 border-t border-slate-200 bg-white/92 px-4 text-xs text-slate-500">
+    <footer className="flex h-11 shrink-0 items-center gap-3 border-t border-line bg-surface/92 px-4 text-ui-sm text-muted">
       <div className="min-w-0 flex-1" />
       <div className="min-w-0 max-w-xs truncate">{ttsStatus}</div>
       <button className={toolbarButtonClass} type="button" onClick={onPlayTTS}>
         <Volume2 className="h-4 w-4" />
-        Speak
+        朗读
       </button>
-      <button className={toolbarButtonClass} type="button" onClick={onStopTTS}>Stop</button>
+      <button className={toolbarButtonClass} type="button" onClick={onStopTTS}>停止</button>
     </footer>
   )
 }
 
 function FormGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid max-w-2xl gap-4">{children}</div>
+  return <div className="grid max-w-2xl gap-4 p-5">{children}</div>
 }
 
 function TextField({ label, value, onChange, type = 'text', placeholder }: { label: string; value: string; onChange(value: string): void; type?: string; placeholder?: string }) {
   return (
     <label className="grid gap-1">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
       <input className={inputClass} type={type} value={value} placeholder={placeholder} onChange={event => onChange(event.target.value)} />
     </label>
   )
@@ -4101,9 +4133,9 @@ function TextField({ label, value, onChange, type = 'text', placeholder }: { lab
 function TextAreaField({ label, value, onChange, placeholder }: { label: string; value: string; onChange(value: string): void; placeholder?: string }) {
   return (
     <label className="grid gap-1">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
       <textarea
-        className={`${inputClass} min-h-36 resize-y font-mono text-xs leading-relaxed`}
+        className={`${inputClass} min-h-36 resize-y font-mono text-ui-sm`}
         value={value}
         placeholder={placeholder}
         spellCheck={false}
@@ -4113,21 +4145,155 @@ function TextAreaField({ label, value, onChange, placeholder }: { label: string;
   )
 }
 
+function Select({
+  value,
+  onChange,
+  options,
+  disabled = false,
+  ariaLabel,
+  className,
+  buttonClassName,
+  previewFamily,
+}: {
+  value: string
+  onChange(value: string): void
+  options: Array<[string, string]>
+  disabled?: boolean
+  ariaLabel?: string
+  className?: string
+  buttonClassName?: string
+  previewFamily?: (value: string) => string | undefined
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const selectedIndex = Math.max(0, options.findIndex(([optionValue]) => optionValue === value))
+  const [activeIndex, setActiveIndex] = useState(selectedIndex)
+  const selectedLabel = options[selectedIndex]?.[1] ?? value
+
+  const closeList = (refocus = false) => {
+    setOpen(false)
+    if (refocus) buttonRef.current?.focus()
+  }
+
+  const openList = () => {
+    setActiveIndex(selectedIndex)
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    listRef.current
+      ?.querySelectorAll<HTMLElement>('[role="option"]')
+      [activeIndex]?.scrollIntoView({ block: 'nearest' })
+  }, [open, activeIndex])
+
+  const choose = (index: number) => {
+    const option = options[index]
+    if (!option) return
+    onChange(option[0])
+    closeList(true)
+  }
+
+  return (
+    <div className={`relative ${className ?? ''}`} ref={containerRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`${inputClass} flex w-full items-center justify-between gap-2 disabled:pointer-events-none disabled:opacity-40 ${buttonClassName ?? ''}`}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => (open ? closeList() : openList())}
+        onKeyDown={event => {
+          if (!open) {
+            if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              openList()
+            }
+            return
+          }
+          if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            setActiveIndex(index => Math.min(options.length - 1, index + 1))
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            setActiveIndex(index => Math.max(0, index - 1))
+          } else if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            choose(activeIndex)
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            closeList(true)
+          }
+        }}
+      >
+        <span className="min-w-0 flex-1 truncate text-left" style={previewFamily ? { fontFamily: previewFamily(value) } : undefined}>
+          {selectedLabel}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div
+          ref={listRef}
+          className="absolute right-0 top-[calc(100%+0.375rem)] z-80 max-h-60 min-w-full w-max max-w-72 overflow-auto rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none"
+          role="listbox"
+        >
+          {options.map(([optionValue, optionLabel], index) => {
+            const selected = optionValue === value
+            return (
+              <button
+                key={optionValue}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className={[
+                  'flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-ui-md transition-colors duration-100',
+                  selected
+                    ? 'bg-accent-soft font-medium text-accent-text'
+                    : 'text-ink-soft hover:bg-surface-muted',
+                  !selected && index === activeIndex ? 'bg-surface-muted' : '',
+                ].join(' ')}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(index)}
+              >
+                <span className="min-w-0 truncate" style={previewFamily ? { fontFamily: previewFamily(optionValue) } : undefined}>
+                  {optionLabel}
+                </span>
+                {selected ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /> : null}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange(value: string): void; options: Array<[string, string]> }) {
   return (
     <label className="grid gap-1">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
-      <select className={inputClass} value={value} onChange={event => onChange(event.target.value)}>
-        {options.map(([optionValue, label]) => <option key={optionValue} value={optionValue}>{label}</option>)}
-      </select>
+      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
+      <Select value={value} options={options} ariaLabel={label} onChange={onChange} />
     </label>
   )
 }
 
 function CheckField({ label, checked, onChange }: { label: string; checked: boolean; onChange(value: boolean): void }) {
   return (
-    <label className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+    <label className="flex items-center justify-between rounded-lg border border-line px-3 py-2">
+      <span className="text-ui-md font-medium text-ink-soft">{label}</span>
       <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} />
     </label>
   )
@@ -4135,8 +4301,8 @@ function CheckField({ label, checked, onChange }: { label: string; checked: bool
 
 function ProgressBar({ value }: { value: number }) {
   return (
-    <div className="h-1 shrink-0 overflow-hidden bg-slate-200">
-      <div className="h-full bg-blue-600" style={{ width: `${Math.round(value * 100)}%` }} />
+    <div className="h-1 shrink-0 overflow-hidden rounded-full bg-track">
+      <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${Math.round(value * 100)}%` }} />
     </div>
   )
 }
@@ -4235,15 +4401,31 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
   const {
     trial: _legacyTrial,
     trialPages: _legacyTrialPages,
+    theme: _legacyReaderTheme,
     ...supportedValue
-  } = value as Partial<DemoConfig> & { trial?: unknown; trialPages?: unknown }
-  const config: DemoConfig = {
+  } = value as Partial<DemoConfig> & { trial?: unknown; trialPages?: unknown; theme?: unknown }
+  let config: DemoConfig = {
     ...defaultConfig,
     ...supportedValue,
     reflowablePageFit: normalizeReflowablePageFit(supportedValue.reflowablePageFit),
     extensionInstallations: normalizeDemoExtensionInstallations(supportedValue.extensionInstallations),
   }
+  const storedExtensionDefaultsVersion = Number(supportedValue.extensionDefaultsVersion) || 0
+  if (storedExtensionDefaultsVersion < BUILT_IN_EXTENSION_DEFAULTS_VERSION) {
+    config = {
+      ...config,
+      chat: true,
+      extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
+    }
+  }
   const manager = createDemoExtensionManager(config)
+  // Before built-in extensions had explicit installation records, AI Chat was
+  // still exposed in the reader toolbar. Migrate that legacy state to the new
+  // default: installed and enabled. A recorded disabled installation remains
+  // disabled on subsequent loads.
+  if (!manager.isInstalled(AI_CHAT_EXTENSION_ID)) {
+    config = { ...config, chat: true }
+  }
   for (const item of manager.listItems()) {
     const { manifest } = item
     if (!isDemoExtensionFeatureControlled(manifest)) continue
@@ -4252,8 +4434,8 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
       if (manager.isEnabled(manifest.id) !== featureEnabled) {
         manager.setEnabled(manifest.id, featureEnabled)
       }
-    } else if (featureEnabled) {
-      manager.install(manifest.id, { enabled: true })
+    } else {
+      manager.install(manifest.id, { enabled: featureEnabled })
     }
   }
   return createDemoConfigWithExtensionManager(config, manager)
@@ -4830,9 +5012,9 @@ function splitLooseStrongText(value: string): MarkdownNode[] {
   return nodes
 }
 
-function getReaderStyles(config: DemoConfig): RendererStyles {
+function getReaderStyles(config: DemoConfig, appTheme: 'light' | 'dark'): RendererStyles {
   return {
-    theme: config.theme,
+    theme: appTheme === 'dark' ? 'night' : 'normal',
     fontSize: config.fontSize,
     fontFamilies: getReaderFontFamilies(config),
     overrideBookFonts: config.overrideBookFonts,
@@ -5274,13 +5456,13 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 
 function panelButtonClass(active: boolean) {
   return active
-    ? `${toolbarButtonClass} bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] ring-1 ring-[var(--ui-accent-softer)]`
+    ? `${toolbarButtonClass} bg-accent-soft text-accent-text ring-1 ring-accent-softer`
     : toolbarButtonClass
 }
 
 function sidebarToolButtonClass(active: boolean) {
   return active
-    ? `${iconButtonClass} bg-[var(--ui-accent-soft)] text-[var(--ui-accent-text)] ring-1 ring-[var(--ui-accent-softer)]`
+    ? `${iconButtonClass} bg-accent-soft text-accent-text ring-1 ring-accent-softer`
     : iconButtonClass
 }
 

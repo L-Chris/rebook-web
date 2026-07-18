@@ -3,6 +3,71 @@
 @theme {
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-serif: Georgia, Cambria, "Times New Roman", serif;
+
+  /* Reader UI type scale (non-body text). Body/book text size is user-configurable
+     and handled by the renderer, not by these tokens. */
+  --text-ui-xs: 0.6875rem;
+  --text-ui-xs--line-height: 1.45;
+  --text-ui-sm: 0.75rem;
+  --text-ui-sm--line-height: 1.5;
+  --text-ui-md: 0.8125rem;
+  --text-ui-md--line-height: 1.5;
+  --text-ui-lg: 0.875rem;
+  --text-ui-lg--line-height: 1.45;
+  --text-ui-xl: 1rem;
+  --text-ui-xl--line-height: 1.35;
+
+  /* Popover/menu entrance. Pair with motion-reduce:animate-none. */
+  --animate-pop: pop 140ms ease-out;
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: scale(0.97) translateY(-3px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* Semantic reader utilities mapped to the scoped --ui-* variables below.
+   `inline` keeps the var() reference at the utility site, so theme switching
+   works by swapping the .reader-shell[data-reader-theme] block at runtime.
+   These utilities are only meaningful inside .reader-shell. */
+@theme inline {
+  --color-surface: var(--ui-surface);
+  --color-surface-raised: var(--ui-surface-raised);
+  --color-surface-muted: var(--ui-surface-muted);
+  --color-ink: var(--ui-text);
+  --color-ink-soft: var(--ui-text-soft);
+  --color-muted: var(--ui-muted);
+  --color-muted-strong: var(--ui-muted-strong);
+  --color-line: var(--ui-border);
+  --color-line-strong: var(--ui-border-strong);
+  --color-accent: var(--ui-accent);
+  --color-accent-hover: var(--ui-accent-hover);
+  --color-accent-soft: var(--ui-accent-soft);
+  --color-accent-softer: var(--ui-accent-softer);
+  --color-accent-text: var(--ui-accent-text);
+  --color-accent-contrast: var(--ui-accent-contrast);
+  --color-track: var(--ui-track);
+  --color-overlay: var(--ui-overlay);
+  --color-success: var(--ui-success-text);
+  --color-success-soft: var(--ui-success-bg);
+  --color-success-line: var(--ui-success-border);
+  --color-warning: var(--ui-warning-text);
+  --color-warning-soft: var(--ui-warning-bg);
+  --color-warning-line: var(--ui-warning-border);
+  --color-danger: var(--ui-danger-text);
+  --color-danger-soft: var(--ui-danger-bg);
+  --color-danger-line: var(--ui-danger-border);
+  --color-hairline: var(--ui-hairline);
+  --color-bg: var(--ui-bg);
+  --shadow-float: 0 8px 32px -12px var(--ui-shadow-strong), 0 2px 8px -4px var(--ui-shadow);
+  --shadow-menu: 0 12px 40px -12px var(--ui-shadow-strong), 0 4px 12px -6px var(--ui-shadow);
+  --shadow-dialog: 0 32px 80px -24px var(--ui-shadow-strong), 0 8px 24px -12px var(--ui-shadow);
 }
 
 :root,
@@ -31,6 +96,43 @@ html[data-app-theme='light'] {
   --library-error-bg: rgba(220, 38, 38, 0.08);
   --library-error-border: rgba(220, 38, 38, 0.2);
   --library-error-text: #b91c1c;
+
+  /* App-level aliases so the semantic utilities (bg-surface, text-ink, …)
+     work outside .reader-shell. The reader theme blocks override these
+     within their own scope. */
+  --ui-bg: var(--library-bg);
+  --ui-bg-soft: var(--library-bg);
+  --ui-surface: var(--library-surface);
+  --ui-surface-raised: var(--library-surface-raised);
+  --ui-surface-muted: var(--library-control);
+  --ui-border: var(--library-border);
+  --ui-border-strong: var(--library-border-strong);
+  --ui-text: var(--library-text);
+  --ui-text-soft: #3f3f46;
+  --ui-muted: var(--library-muted);
+  --ui-muted-strong: #52525b;
+  --ui-accent: var(--library-accent);
+  --ui-accent-hover: #115e59;
+  --ui-accent-soft: var(--library-accent-soft);
+  --ui-accent-softer: rgba(15, 118, 110, 0.22);
+  --ui-accent-text: var(--library-accent-text);
+  --ui-accent-contrast: #ffffff;
+  --ui-track: var(--library-control);
+  --ui-overlay: rgba(24, 24, 27, 0.32);
+  --ui-hairline: rgba(255, 255, 255, 0.6);
+  --ui-shadow: var(--library-shadow);
+  --ui-shadow-strong: var(--library-menu-shadow);
+  --ui-code-bg: #0f172a;
+  --ui-code-text: #e2e8f0;
+  --ui-success-bg: var(--library-success-bg);
+  --ui-success-border: var(--library-success-border);
+  --ui-success-text: var(--library-success-text);
+  --ui-warning-bg: #fffbeb;
+  --ui-warning-border: #fde68a;
+  --ui-warning-text: #b45309;
+  --ui-danger-bg: var(--library-error-bg);
+  --ui-danger-border: var(--library-error-border);
+  --ui-danger-text: var(--library-error-text);
 }
 
 html[data-app-theme='dark'] {
@@ -58,52 +160,105 @@ html[data-app-theme='dark'] {
   --library-error-bg: rgba(248, 113, 113, 0.1);
   --library-error-border: rgba(248, 113, 113, 0.2);
   --library-error-text: #fecaca;
+
+  /* App-level aliases (see light block above). */
+  --ui-bg: var(--library-bg);
+  --ui-bg-soft: var(--library-bg);
+  --ui-surface: var(--library-surface);
+  --ui-surface-raised: var(--library-surface-raised);
+  --ui-surface-muted: var(--library-control);
+  --ui-border: var(--library-border);
+  --ui-border-strong: var(--library-border-strong);
+  --ui-text: var(--library-text);
+  --ui-text-soft: #d4d4d8;
+  --ui-muted: var(--library-muted);
+  --ui-muted-strong: #a1a1aa;
+  --ui-accent: var(--library-accent);
+  --ui-accent-hover: #99f6e4;
+  --ui-accent-soft: var(--library-accent-soft);
+  --ui-accent-softer: rgba(45, 212, 191, 0.25);
+  --ui-accent-text: var(--library-accent-text);
+  --ui-accent-contrast: #18181b;
+  --ui-track: rgba(255, 255, 255, 0.1);
+  --ui-overlay: rgba(0, 0, 0, 0.6);
+  --ui-hairline: rgba(255, 255, 255, 0.08);
+  --ui-shadow: var(--library-shadow);
+  --ui-shadow-strong: var(--library-menu-shadow);
+  --ui-code-bg: #020617;
+  --ui-code-text: #e2e8f0;
+  --ui-success-bg: var(--library-success-bg);
+  --ui-success-border: var(--library-success-border);
+  --ui-success-text: var(--library-success-text);
+  --ui-warning-bg: rgba(251, 191, 36, 0.1);
+  --ui-warning-border: rgba(251, 191, 36, 0.25);
+  --ui-warning-text: #fcd34d;
+  --ui-danger-bg: var(--library-error-bg);
+  --ui-danger-border: var(--library-error-border);
+  --ui-danger-text: var(--library-error-text);
 }
 
-* {
-  box-sizing: border-box;
+/* Element defaults must live in @layer base: unlayered author styles outrank
+   Tailwind's layered utilities regardless of specificity, so a raw rule here
+   would override text-ui / font / cursor utilities on the same element.
+   (Tailwind's preflight already covers box-sizing and the form-element font
+   reset, so those rules are not repeated.) */
+@layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    overflow: hidden;
+    background: var(--ui-bg);
+    color: var(--ui-text);
+    font-family: var(--font-sans);
+  }
+
+  button:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  summary,
+  label[for],
+  [role='button']:not([aria-disabled='true']),
+  input:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled,
+  [role='button'][aria-disabled='true'],
+  input:disabled {
+    cursor: not-allowed;
+  }
 }
 
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-}
+/* ---------------------------------------------------------------------------
+   Reader themes
+   A theme = one complete block of color tokens. Structural tokens (type scale,
+   radii, shadows, bar heights) are theme-independent and live in @theme above.
 
-body {
-  overflow: hidden;
-  background: var(--library-bg);
-  color: #111827;
-  font-family: var(--font-sans);
-}
+   When adding a theme, copy a block and define EVERY token in this checklist:
+     surfaces : --ui-bg --ui-bg-soft --ui-surface --ui-surface-raised --ui-surface-muted
+     text     : --ui-text --ui-text-soft --ui-muted --ui-muted-strong
+     borders  : --ui-border --ui-border-strong
+     accent   : --ui-accent --ui-accent-hover --ui-accent-soft --ui-accent-softer
+                --ui-accent-text --ui-accent-contrast
+     misc     : --ui-track --ui-overlay --ui-hairline --ui-shadow --ui-shadow-strong
+                --ui-code-bg --ui-code-text
+     status   : --ui-success-bg/--ui-success-border/--ui-success-text
+                --ui-warning-bg/--ui-warning-border/--ui-warning-text
+                --ui-danger-bg/--ui-danger-border/--ui-danger-text
+     marks    : --ui-mark-search --ui-mark-tts --ui-mark-citation
+                --ui-mark-citation-border --ui-mark-citation-ring
+   Reader colors are selected directly from the app-level light/dark theme.
+--------------------------------------------------------------------------- */
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-
-button:not(:disabled),
-a[href],
-select:not(:disabled),
-summary,
-label[for],
-[role='button']:not([aria-disabled='true']),
-input:not(:disabled) {
-  cursor: pointer;
-}
-
-button:disabled,
-select:disabled,
-[role='button'][aria-disabled='true'],
-input:disabled {
-  cursor: not-allowed;
-}
-
-.reader-shell {
+.reader-shell,
+.reader-shell[data-reader-theme='light'] {
   --ui-bg: #eef1f5;
   --ui-bg-soft: #f8fafc;
   --ui-surface: #ffffff;
@@ -120,16 +275,33 @@ input:disabled {
   --ui-accent-soft: #e6f5f2;
   --ui-accent-softer: #bde8e1;
   --ui-accent-text: #0f766e;
+  --ui-accent-contrast: #ffffff;
+  --ui-track: #e2e8f0;
+  --ui-overlay: rgba(15, 23, 42, 0.32);
+  --ui-hairline: rgba(255, 255, 255, 0.6);
   --ui-shadow: rgba(15, 23, 42, 0.12);
   --ui-shadow-strong: rgba(15, 23, 42, 0.16);
   --ui-code-bg: #0f172a;
   --ui-code-text: #e2e8f0;
-  --ui-backdrop: rgba(15, 23, 42, 0.35);
+  --ui-success-bg: #ecfdf5;
+  --ui-success-border: #a7f3d0;
+  --ui-success-text: #047857;
+  --ui-warning-bg: #fffbeb;
+  --ui-warning-border: #fde68a;
+  --ui-warning-text: #b45309;
+  --ui-danger-bg: #fef2f2;
+  --ui-danger-border: #fecaca;
+  --ui-danger-text: #b91c1c;
+  --ui-mark-search: rgba(250, 204, 21, 0.35);
+  --ui-mark-tts: rgba(45, 212, 191, 0.22);
+  --ui-mark-citation: rgba(245, 158, 11, 0.22);
+  --ui-mark-citation-border: rgba(245, 158, 11, 0.75);
+  --ui-mark-citation-ring: rgba(245, 158, 11, 0.08);
   color: var(--ui-text);
   background: var(--ui-bg);
 }
 
-.reader-shell[data-reader-theme='night'] {
+.reader-shell[data-reader-theme='dark'] {
   --ui-bg: #0b1012;
   --ui-bg-soft: #101719;
   --ui-surface: #151d20;
@@ -146,81 +318,30 @@ input:disabled {
   --ui-accent-soft: rgba(45, 212, 191, 0.13);
   --ui-accent-softer: rgba(45, 212, 191, 0.22);
   --ui-accent-text: #99f6e4;
+  --ui-accent-contrast: #0b1012;
+  --ui-track: #29363a;
+  --ui-overlay: rgba(2, 6, 23, 0.62);
+  --ui-hairline: rgba(255, 255, 255, 0.09);
   --ui-shadow: rgba(0, 0, 0, 0.38);
   --ui-shadow-strong: rgba(0, 0, 0, 0.52);
   --ui-code-bg: #020617;
   --ui-code-text: #e2e8f0;
-  --ui-backdrop: rgba(2, 6, 23, 0.62);
-}
-
-.reader-shell .bg-white,
-.reader-shell .bg-white\/84,
-.reader-shell .bg-white\/92 {
-  background-color: var(--ui-surface) !important;
-}
-
-.reader-shell .bg-slate-50,
-.reader-shell .bg-slate-100 {
-  background-color: var(--ui-surface-muted) !important;
-}
-
-.reader-shell .bg-slate-200 {
-  background-color: var(--ui-border) !important;
-}
-
-.reader-shell .bg-blue-50 {
-  background-color: var(--ui-accent-soft) !important;
-}
-
-.reader-shell .bg-blue-600 {
-  background-color: var(--ui-accent) !important;
-}
-
-.reader-shell .hover\:bg-blue-50:hover,
-.reader-shell .hover\:bg-blue-200\/50:hover {
-  background-color: var(--ui-accent-soft) !important;
-}
-
-.reader-shell .hover\:bg-blue-700:hover {
-  background-color: var(--ui-accent-hover) !important;
-}
-
-.reader-shell .hover\:bg-slate-100:hover,
-.reader-shell .hover\:bg-white:hover {
-  background-color: var(--ui-surface-raised) !important;
-}
-
-.reader-shell .bg-slate-950\/35 {
-  background-color: var(--ui-backdrop) !important;
-}
-
-.reader-shell .text-slate-900,
-.reader-shell .text-slate-800,
-.reader-shell .text-slate-700 {
-  color: var(--ui-text) !important;
-}
-
-.reader-shell .text-slate-500,
-.reader-shell .text-slate-600,
-.reader-shell .text-slate-400 {
-  color: var(--ui-muted) !important;
-}
-
-.reader-shell .text-blue-700,
-.reader-shell .text-blue-600,
-.reader-shell .text-blue-500 {
-  color: var(--ui-accent-text) !important;
-}
-
-.reader-shell .border-slate-200,
-.reader-shell .border-slate-300,
-.reader-shell .border-blue-200,
-.reader-shell .border-blue-300 {
-  border-color: var(--ui-border) !important;
-}
-
-.reader-shell .ring-blue-200 {
-  --tw-ring-color: var(--ui-accent-softer) !important;
+  --ui-success-bg: rgba(52, 211, 153, 0.12);
+  --ui-success-border: rgba(52, 211, 153, 0.28);
+  --ui-success-text: #6ee7b7;
+  --ui-warning-bg: rgba(251, 191, 36, 0.12);
+  --ui-warning-border: rgba(251, 191, 36, 0.3);
+  --ui-warning-text: #fcd34d;
+  --ui-danger-bg: rgba(248, 113, 113, 0.12);
+  --ui-danger-border: rgba(248, 113, 113, 0.3);
+  --ui-danger-text: #fca5a5;
+  --ui-mark-search: rgba(250, 204, 21, 0.3);
+  --ui-mark-tts: rgba(45, 212, 191, 0.26);
+  --ui-mark-citation: rgba(245, 158, 11, 0.3);
+  --ui-mark-citation-border: rgba(245, 158, 11, 0.85);
+  --ui-mark-citation-ring: rgba(245, 158, 11, 0.12);
+  color: var(--ui-text);
+  background: var(--ui-bg);
 }
 
 #viewer {
@@ -230,19 +351,19 @@ input:disabled {
 
 .rebook-search-current {
   border-radius: 4px;
-  background: rgba(250, 204, 21, 0.35) !important;
+  background: var(--ui-mark-search) !important;
 }
 
 .rebook-tts-current {
   border-radius: 4px;
-  background: rgba(45, 212, 191, 0.22) !important;
+  background: var(--ui-mark-tts) !important;
 }
 
 .rebook-mark-citation {
-  border-left: 3px solid rgba(245, 158, 11, 0.75);
+  border-left: 3px solid var(--ui-mark-citation-border);
   border-radius: 4px;
-  background: rgba(245, 158, 11, 0.22) !important;
-  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.08);
+  background: var(--ui-mark-citation) !important;
+  box-shadow: 0 0 0 2px var(--ui-mark-citation-ring);
 }
 
 /* Markdown is generated by react-markdown, so these selectors style content
@@ -252,7 +373,7 @@ input:disabled {
   display: block;
   color: var(--ui-text);
   font-family: var(--font-sans);
-  font-size: 0.875rem;
+  font-size: var(--text-ui-md);
   line-height: 1.7;
 }
 

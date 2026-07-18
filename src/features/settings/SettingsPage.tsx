@@ -2,6 +2,7 @@ import { ArrowLeft, Cloud, LogIn, Moon, Sun, UserRound } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { useAppTheme } from '../theme/ThemeContext'
+import { iconButtonClass } from '../../lib/ui-classes'
 
 export function SettingsPage() {
   const auth = useAuth()
@@ -9,18 +10,18 @@ export function SettingsPage() {
   const { theme, setTheme } = useAppTheme()
 
   return (
-    <main className="h-full overflow-y-auto bg-[var(--library-bg)] text-[var(--library-text)]">
-      <header className="sticky top-0 z-30 border-b border-[var(--library-border)] bg-[var(--library-header)] px-4 backdrop-blur-xl md:px-7">
+    <main className="h-full overflow-y-auto bg-bg text-ink">
+      <header className="sticky top-0 z-30 border-b border-line bg-surface/92 px-4 backdrop-blur-xl md:px-7">
         <div className="mx-auto flex h-16 max-w-4xl items-center gap-3">
           <button
-            className="grid h-10 w-10 place-items-center rounded-xl text-[var(--library-muted)] transition hover:bg-[var(--library-hover)] hover:text-[var(--library-text)]"
+            className={iconButtonClass}
             type="button"
             aria-label="返回书架"
             onClick={() => navigate('/')}
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4" />
           </button>
-          <h1 className="text-lg font-semibold">设置</h1>
+          <h1 className="text-ui-lg font-semibold">设置</h1>
         </div>
       </header>
 
@@ -47,41 +48,41 @@ export function SettingsPage() {
         <SettingsSection title="账号与云端" description="本地书架无需登录；登录后可连接云端书架和 WebDAV。">
           {auth.user ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex items-center gap-3 rounded-2xl border border-[var(--library-border)] bg-[var(--library-surface)] p-4">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--library-control)] text-[var(--library-muted)]">
+              <div className="flex items-center gap-3 rounded-xl border border-line bg-surface p-4">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-muted text-muted">
                   <UserRound className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{auth.user.displayName || auth.user.email}</div>
-                  <div className="mt-1 text-xs text-[var(--library-muted)]">已登录</div>
+                  <div className="truncate text-ui-md font-semibold">{auth.user.displayName || auth.user.email}</div>
+                  <div className="mt-1 text-ui-sm text-muted">已登录</div>
                 </div>
               </div>
               <button
-                className="flex items-center gap-3 rounded-2xl border border-[var(--library-border)] bg-[var(--library-surface)] p-4 text-left transition hover:border-[var(--library-border-strong)] hover:bg-[var(--library-hover)]"
+                className="flex items-center gap-3 rounded-xl border border-line bg-surface p-4 text-left transition-colors duration-150 hover:border-line-strong hover:bg-surface-muted"
                 type="button"
                 onClick={() => navigate('/settings/cloud-drives')}
               >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--library-control)] text-[var(--library-muted)]">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-muted text-muted">
                   <Cloud className="h-5 w-5" />
                 </span>
                 <span>
-                  <span className="block text-sm font-semibold">WebDAV</span>
-                  <span className="mt-1 block text-xs text-[var(--library-muted)]">管理云端书籍来源</span>
+                  <span className="block text-ui-md font-semibold">WebDAV</span>
+                  <span className="mt-1 block text-ui-sm text-muted">管理云端书籍来源</span>
                 </span>
               </button>
             </div>
           ) : (
             <button
-              className="flex w-full items-center gap-3 rounded-2xl border border-[var(--library-border)] bg-[var(--library-surface)] p-4 text-left transition hover:border-[var(--library-border-strong)] hover:bg-[var(--library-hover)]"
+              className="flex w-full items-center gap-3 rounded-xl border border-line bg-surface p-4 text-left transition-colors duration-150 hover:border-line-strong hover:bg-surface-muted"
               type="button"
               onClick={() => navigate('/login', { state: { from: '/settings' } })}
             >
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--library-control)] text-[var(--library-muted)]">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface-muted text-muted">
                 <LogIn className="h-5 w-5" />
               </span>
               <span>
-                <span className="block text-sm font-semibold">登录</span>
-                <span className="mt-1 block text-xs text-[var(--library-muted)]">同步云端书架和 WebDAV</span>
+                <span className="block text-ui-md font-semibold">登录</span>
+                <span className="mt-1 block text-ui-sm text-muted">同步云端书架和 WebDAV</span>
               </span>
             </button>
           )}
@@ -101,9 +102,9 @@ function SettingsSection({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-3xl border border-[var(--library-border)] bg-[var(--library-surface)] p-5 shadow-[0_18px_55px_var(--library-shadow)] md:p-6">
-      <h2 className="text-base font-semibold">{title}</h2>
-      <p className="mt-1.5 text-sm text-[var(--library-muted)]">{description}</p>
+    <section className="rounded-xl border border-line bg-surface p-5 shadow-dialog md:p-6">
+      <h2 className="text-ui-lg font-semibold">{title}</h2>
+      <p className="mt-1.5 text-ui-md text-muted">{description}</p>
       <div className="mt-5">{children}</div>
     </section>
   )
@@ -124,10 +125,10 @@ function ThemeOption({
 }) {
   return (
     <button
-      className={`flex items-center gap-3 rounded-2xl border p-4 text-left transition ${
+      className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-colors duration-150 ${
         active
-          ? 'border-[var(--library-accent)] bg-[var(--library-accent-soft)]'
-          : 'border-[var(--library-border)] bg-[var(--library-bg)] hover:border-[var(--library-border-strong)]'
+          ? 'border-accent bg-accent-soft'
+          : 'border-line bg-bg hover:border-line-strong'
       }`}
       type="button"
       aria-pressed={active}
@@ -135,14 +136,14 @@ function ThemeOption({
     >
       <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${
         active
-          ? 'bg-[var(--library-accent)] text-white'
-          : 'bg-[var(--library-control)] text-[var(--library-muted)]'
+          ? 'bg-accent text-accent-contrast'
+          : 'bg-surface-muted text-muted'
       }`}>
         {icon}
       </span>
       <span>
-        <span className="block text-sm font-semibold">{label}</span>
-        <span className="mt-1 block text-xs text-[var(--library-muted)]">{description}</span>
+        <span className="block text-ui-md font-semibold">{label}</span>
+        <span className="mt-1 block text-ui-sm text-muted">{description}</span>
       </span>
     </button>
   )

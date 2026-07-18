@@ -1,4 +1,5 @@
 import type { ShelfItem } from './api'
+import { createClientUUID } from './client-id'
 import {
   BrowserDOMAdapter,
   BrowserURLFactory,
@@ -58,7 +59,7 @@ export async function importLocalBook(file: File): Promise<ShelfItem> {
   const now = new Date().toISOString()
   const metadata = await extractLocalBookMetadata(file)
   const record: LocalBookRecord = {
-    id: `${LOCAL_BOOK_PREFIX}${crypto.randomUUID()}`,
+    id: `${LOCAL_BOOK_PREFIX}${createClientUUID()}`,
     title: metadata.title,
     author: metadata.author,
     sourceType: extensionFromFileName(file.name) || 'ebook',

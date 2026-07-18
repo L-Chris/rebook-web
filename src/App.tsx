@@ -8,6 +8,7 @@ import {
   VerifyEmailPage,
 } from './features/auth/AuthPages'
 import { CloudDrivePage } from './features/cloud-drive/CloudDrivePage'
+import { ExtensionStorePage } from './features/extensions/ExtensionStorePage'
 import ReaderWorkspace from './features/reader/ReaderWorkspace'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { ShelfPage } from './features/shelf/ShelfPage'
@@ -19,6 +20,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/" element={<ShelfPage />} />
+          <Route path="/extensions" element={<ExtensionStorePage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
           <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
@@ -57,7 +59,7 @@ function GuestOnly({ children }: { children: React.ReactNode }) {
 
 function LibraryLayout() {
   return (
-    <div className="h-full overflow-y-auto bg-[linear-gradient(180deg,#f7faf9_0,#eef2f5_42%,#e9eef2_100%)]">
+    <div className="h-full overflow-y-auto bg-bg">
       <Outlet />
     </div>
   )
@@ -81,7 +83,7 @@ function ShelfReaderPage() {
 
 function FullPageLoading() {
   return (
-    <div className="grid h-full place-items-center bg-slate-100 text-sm text-slate-500">
+    <div className="grid h-full place-items-center bg-bg text-ui-md text-muted">
       加载中…
     </div>
   )

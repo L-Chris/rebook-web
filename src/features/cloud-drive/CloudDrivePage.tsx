@@ -16,6 +16,7 @@ import {
   type CloudDriveItem,
   type ImportJob,
 } from '../../lib/api'
+import { inputClass, primaryButtonClass, toolbarButtonClass } from '../../lib/ui-classes'
 
 type SyncJob = {
   id: string
@@ -189,39 +190,39 @@ export function CloudDrivePage() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-7 md:px-7 md:py-10">
-      <button className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900" onClick={() => navigate('/')}>
+      <button className="inline-flex items-center gap-2 text-ui-md text-muted transition-colors duration-150 hover:text-ink" onClick={() => navigate('/')}>
         <ArrowLeft className="h-4 w-4" />
         返回书架
       </button>
       <div className="mt-5">
-        <p className="text-sm font-medium text-teal-700">CLOUD STORAGE</p>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-950">WebDAV</h1>
-        <p className="mt-2 text-sm text-slate-500">支持坚果云、Nextcloud 和兼容 WebDAV 的自建存储。</p>
+        <p className="text-ui-sm font-medium tracking-wide text-accent-text">CLOUD STORAGE</p>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">WebDAV</h1>
+        <p className="mt-2 text-ui-md text-muted">支持坚果云、Nextcloud 和兼容 WebDAV 的自建存储。</p>
       </div>
 
       {(message || error) ? (
-        <div className={`mt-6 rounded-xl border px-4 py-3 text-sm ${
-          error ? 'border-red-200 bg-red-50 text-red-700' : 'border-teal-200 bg-teal-50 text-teal-800'
+        <div className={`mt-6 rounded-xl border px-4 py-3 text-ui-md ${
+          error ? 'border-danger-line bg-danger-soft text-danger' : 'border-success-line bg-success-soft text-success'
         }`}>
           {error || message}
         </div>
       ) : null}
 
       {loading ? (
-        <div className="grid min-h-80 place-items-center text-teal-700">
+        <div className="grid min-h-80 place-items-center text-accent-text">
           <Loader2 className="h-7 w-7 animate-spin" />
         </div>
       ) : (
         <div className="mt-7 space-y-6">
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-4 border-b border-slate-100 p-5 md:flex-row md:items-center md:justify-between">
+          <section className="overflow-hidden rounded-xl border border-line bg-surface">
+            <div className="flex flex-col gap-4 border-b border-line p-5 md:flex-row md:items-center md:justify-between">
               <div className="flex items-center gap-3">
-                <span className="grid h-11 w-11 place-items-center rounded-xl bg-teal-50 text-teal-700">
+                <span className="grid h-10 w-10 place-items-center rounded-lg bg-accent-soft text-accent-text">
                   <Cloud className="h-5 w-5" />
                 </span>
                 <div>
-                  <h2 className="font-semibold text-slate-950">WebDAV 账号</h2>
-                  <p className="mt-0.5 text-sm text-slate-500">{activeAccount ? '已连接' : '使用第三方应用密码连接'}</p>
+                  <h2 className="text-ui-lg font-semibold text-ink">WebDAV 账号</h2>
+                  <p className="mt-0.5 text-ui-sm text-muted">{activeAccount ? '已连接' : '使用第三方应用密码连接'}</p>
                 </div>
               </div>
               {activeAccount ? (
@@ -240,10 +241,10 @@ export function CloudDrivePage() {
                   {accounts.map(account => (
                     <button
                       key={account.id}
-                      className={`flex items-center justify-between rounded-xl border p-4 text-left ${
+                      className={`flex items-center justify-between rounded-xl border p-4 text-left transition-colors duration-150 ${
                         activeAccount?.id === account.id
-                          ? 'border-teal-400 bg-teal-50/60'
-                          : 'border-slate-200 hover:border-slate-300'
+                          ? 'border-accent bg-accent-soft'
+                          : 'border-line hover:border-line-strong'
                       }`}
                       onClick={() => {
                         setActiveId(account.id)
@@ -251,11 +252,11 @@ export function CloudDrivePage() {
                       }}
                     >
                       <div className="min-w-0">
-                        <div className="truncate font-medium text-slate-900">{account.displayName || 'WebDAV'}</div>
-                        <div className="mt-1 truncate text-xs text-slate-500">{account.username}</div>
-                        <div className="mt-1 truncate text-xs text-slate-400">{account.rootPath}</div>
+                        <div className="truncate text-ui-md font-medium text-ink">{account.displayName || 'WebDAV'}</div>
+                        <div className="mt-1 truncate text-ui-sm text-muted">{account.username}</div>
+                        <div className="mt-1 truncate text-ui-sm text-muted">{account.rootPath}</div>
                       </div>
-                      {activeAccount?.id === account.id ? <CheckCircle2 className="h-5 w-5 shrink-0 text-teal-700" /> : null}
+                      {activeAccount?.id === account.id ? <CheckCircle2 className="h-4 w-4 shrink-0 text-accent-text" /> : null}
                     </button>
                   ))}
                 </div>
@@ -268,7 +269,7 @@ export function CloudDrivePage() {
                   <Input label="书籍目录" value={form.rootPath} onChangeValue={value => setForm(current => ({ ...current, rootPath: value }))} />
                   <div className="flex items-end">
                     <button
-                      className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
+                      className={`${primaryButtonClass} h-10 w-full`}
                       disabled={busy === 'connect'}
                       onClick={() => void connect()}
                     >
@@ -282,27 +283,27 @@ export function CloudDrivePage() {
           </section>
 
           {activeAccount ? (
-            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-100 p-5">
-                <h2 className="font-semibold text-slate-950">远程书籍</h2>
-                <p className="mt-1 text-sm text-slate-500">同步只读取文件元数据，点击导入后才会下载并解析。</p>
+            <section className="overflow-hidden rounded-xl border border-line bg-surface">
+              <div className="border-b border-line p-5">
+                <h2 className="text-ui-lg font-semibold text-ink">远程书籍</h2>
+                <p className="mt-1 text-ui-sm text-muted">同步只读取文件元数据，点击导入后才会下载并解析。</p>
               </div>
               {items.length ? (
-                <div className="divide-y divide-slate-100">
+                <div className="divide-y divide-line">
                   {items.map(item => (
                     <div key={item.id} className="flex items-center gap-3 px-5 py-4">
-                      <FileText className="h-5 w-5 shrink-0 text-slate-400" />
+                      <FileText className="h-4 w-4 shrink-0 text-muted" />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-slate-900">{item.name}</div>
-                        <div className="mt-1 truncate text-xs text-slate-400">
+                        <div className="truncate text-ui-md font-medium text-ink">{item.name}</div>
+                        <div className="mt-1 truncate text-ui-sm text-muted">
                           {formatSize(item.size)} · {item.path}
                         </div>
                       </div>
-                      <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500 sm:inline">
+                      <span className="hidden rounded-full bg-surface-muted px-2 py-1 text-ui-sm text-muted sm:inline">
                         {statusLabel(item.syncStatus)}
                       </span>
                       <button
-                        className="inline-flex h-9 items-center gap-2 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white disabled:opacity-40"
+                        className={primaryButtonClass}
                         disabled={item.syncStatus === 'unsupported' || busy === `import:${item.id}`}
                         onClick={() => void importItem(item)}
                       >
@@ -313,7 +314,7 @@ export function CloudDrivePage() {
                   ))}
                 </div>
               ) : (
-                <div className="px-5 py-16 text-center text-sm text-slate-500">
+                <div className="px-5 py-16 text-center text-ui-md text-muted">
                   暂无文件，点击“同步”扫描远程目录。
                 </div>
               )}
@@ -338,9 +339,9 @@ function Input({
 }) {
   return (
     <label className="grid gap-1.5">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className="text-ui-md font-medium text-ink-soft">{label}</span>
       <input
-        className="h-11 rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-600 focus:ring-4 focus:ring-teal-600/10"
+        className={inputClass}
         type={type}
         value={value}
         onChange={event => onChangeValue(event.target.value)}
@@ -362,7 +363,7 @@ function ActionButton({
 }) {
   return (
     <button
-      className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:border-teal-300 hover:text-teal-800 disabled:opacity-50"
+      className={toolbarButtonClass}
       disabled={busy}
       onClick={onClickAction}
     >

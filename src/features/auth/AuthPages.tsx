@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { BookOpen, Loader2 } from 'lucide-react'
 import { useAuth } from './AuthContext'
+import { inputClass, primaryButtonClass } from '../../lib/ui-classes'
 
 export function LoginPage() {
   const auth = useAuth()
@@ -35,11 +36,11 @@ export function LoginPage() {
         <FormError message={error} />
         <SubmitButton busy={busy}>登录</SubmitButton>
       </form>
-      <div className="mt-5 flex items-center justify-between text-sm">
-        <Link className="text-teal-700 hover:text-teal-900" to="/register">注册账号</Link>
-        <Link className="text-slate-500 hover:text-slate-800" to="/forgot-password">忘记密码</Link>
+      <div className="mt-5 flex items-center justify-between text-ui-md">
+        <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/register">注册账号</Link>
+        <Link className="text-muted transition-colors duration-150 hover:text-ink" to="/forgot-password">忘记密码</Link>
       </div>
-      <Link className="mt-6 block text-center text-xs text-slate-400 hover:text-slate-700" to="/">
+      <Link className="mt-6 block text-center text-ui-sm text-muted transition-colors duration-150 hover:text-ink" to="/">
         暂不登录，返回本地书架
       </Link>
     </AuthCard>
@@ -86,8 +87,8 @@ export function RegisterPage() {
         {message ? <Notice>{message}</Notice> : null}
         <SubmitButton busy={busy}>注册</SubmitButton>
       </form>
-      <p className="mt-5 text-center text-sm text-slate-500">
-        已有账号？ <Link className="text-teal-700 hover:text-teal-900" to="/login">登录</Link>
+      <p className="mt-5 text-center text-ui-md text-muted">
+        已有账号？ <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/login">登录</Link>
       </p>
     </AuthCard>
   )
@@ -119,11 +120,11 @@ export function VerifyEmailPage() {
   return (
     <AuthCard title="邮箱验证" description={status}>
       {failed ? (
-        <Link className="block rounded-xl bg-slate-900 px-4 py-3 text-center text-sm font-semibold text-white" to="/login">
+        <Link className={`${primaryButtonClass} h-10 w-full`} to="/login">
           返回登录
         </Link>
       ) : (
-        <div className="flex justify-center py-8 text-teal-700">
+        <div className="flex justify-center py-8 text-accent-text">
           <Loader2 className="h-7 w-7 animate-spin" />
         </div>
       )}
@@ -160,7 +161,7 @@ export function ForgotPasswordPage() {
         {message ? <Notice>{message}</Notice> : null}
         <SubmitButton busy={busy}>发送重置链接</SubmitButton>
       </form>
-      <Link className="mt-5 block text-center text-sm text-slate-500 hover:text-slate-800" to="/login">
+      <Link className="mt-5 block text-center text-ui-md text-muted transition-colors duration-150 hover:text-ink" to="/login">
         返回登录
       </Link>
     </AuthCard>
@@ -221,14 +222,14 @@ function AuthCard({
   children: ReactNode
 }) {
   return (
-    <main className="flex min-h-full items-center justify-center overflow-y-auto bg-[radial-gradient(circle_at_top,#dff6f1_0,#eef2f5_42%,#e8edf2_100%)] px-4 py-10">
-      <section className="w-full max-w-md rounded-[2rem] border border-white/80 bg-white/90 p-7 shadow-[0_30px_90px_rgba(15,23,42,.14)] backdrop-blur md:p-9">
+    <main className="flex min-h-full items-center justify-center overflow-y-auto bg-bg px-4 py-10">
+      <section className="w-full max-w-md rounded-2xl border border-line bg-surface-raised p-7 shadow-dialog md:p-9">
         <div className="mb-7 text-center">
-          <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-teal-700 text-white shadow-lg shadow-teal-700/20">
+          <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-accent text-accent-contrast shadow-menu">
             <BookOpen className="h-6 w-6" />
           </span>
-          <h1 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950">{title}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-500">{description}</p>
+          <h1 className="mt-4 text-xl font-semibold tracking-tight text-ink">{title}</h1>
+          <p className="mt-2 text-ui-md text-muted">{description}</p>
         </div>
         {children}
       </section>
@@ -251,9 +252,9 @@ function Field({
 }) {
   return (
     <label className="grid gap-1.5">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className="text-ui-md font-medium text-ink-soft">{label}</span>
       <input
-        className="h-11 rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-900 outline-none transition focus:border-teal-600 focus:ring-4 focus:ring-teal-600/10"
+        className={inputClass}
         type={type}
         value={value}
         autoComplete={autoComplete}
@@ -267,7 +268,7 @@ function Field({
 function SubmitButton({ busy, children }: { busy: boolean; children: ReactNode }) {
   return (
     <button
-      className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
+      className={`${primaryButtonClass} h-10 w-full`}
       disabled={busy}
       type="submit"
     >
@@ -279,7 +280,7 @@ function SubmitButton({ busy, children }: { busy: boolean; children: ReactNode }
 
 function FormError({ message }: { message: string }) {
   return message ? (
-    <div className="rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
+    <div className="rounded-xl border border-danger-line bg-danger-soft px-3.5 py-2.5 text-ui-md text-danger">
       {translateError(message)}
     </div>
   ) : null
@@ -287,7 +288,7 @@ function FormError({ message }: { message: string }) {
 
 function Notice({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2.5 text-sm leading-6 text-teal-800">
+    <div className="rounded-xl border border-success-line bg-success-soft px-3.5 py-2.5 text-ui-md text-success">
       {children}
     </div>
   )
