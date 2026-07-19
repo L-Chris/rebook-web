@@ -17,6 +17,7 @@ import {
   type ImportJob,
 } from '../../lib/api'
 import { inputClass, primaryButtonClass, toolbarButtonClass } from '../../lib/ui-classes'
+import { useI18n, type Translate } from '../i18n/LanguageContext'
 
 type SyncJob = {
   id: string
@@ -27,6 +28,7 @@ type SyncJob = {
 }
 
 export function CloudDrivePage() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const uploadInput = useRef<HTMLInputElement>(null)
   const [accounts, setAccounts] = useState<CloudDriveAccount[]>([])
@@ -37,7 +39,7 @@ export function CloudDrivePage() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [form, setForm] = useState({
-    displayName: '坚果云',
+    displayName: t('cloud.defaultName'),
     serverUrl: 'https://dav.jianguoyun.com/dav',
     username: '',
     password: '',
@@ -69,11 +71,11 @@ export function CloudDrivePage() {
       setActiveId(nextId)
       await loadItems(nextId)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'WebDAV 设置加载失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [activeId, loadItems])
+  }, [activeId, loadItems, t])
 
   useEffect(() => {
     void loadAccounts()
@@ -89,11 +91,11 @@ export function CloudDrivePage() {
         json: form,
       })
       setForm(value => ({ ...value, password: '' }))
-      setMessage('WebDAV 绑定成功')
+      setMessage(t('cloud.connectedNotice'))
       setActiveId(account.id)
       await loadAccounts()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'WebDAV 绑定失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.connectFailed'))
     } finally {
       setBusy('')
     }
@@ -103,17 +105,17 @@ export function CloudDrivePage() {
     if (!activeAccount) return
     setBusy('sync')
     setError('')
-    setMessage('正在同步 WebDAV 文件…')
+    setMessage(t('cloud.syncingFiles'))
     try {
       const job = await apiRequest<SyncJob>(
         `/cloud-drive/accounts/${activeAccount.id}/sync`,
         { method: 'POST', json: {} },
       )
-      const completed = await waitForSync(job.id, setMessage)
-      setMessage(`同步完成，共发现 ${completed.totalItems} 个项目`)
+      const completed = await waitForSync(job.id, setMessage, t)
+      setMessage(t('cloud.syncCompleted', { count: completed.totalItems }))
       await loadItems(activeAccount.id)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '同步失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.syncFailed'))
       setMessage('')
     } finally {
       setBusy('')
@@ -123,7 +125,7 @@ export function CloudDrivePage() {
   const importItem = async (item: CloudDriveItem) => {
     setBusy(`import:${item.id}`)
     setError('')
-    setMessage(`正在导入 ${item.name}…`)
+    setMessage(t('cloud.importingFile', { name: item.name }))
     try {
       const result = await apiRequest<ImportJob & { alreadyImported?: boolean }>(
         `/cloud-drive/items/${item.id}/import`,
@@ -132,13 +134,13 @@ export function CloudDrivePage() {
       const completed =
         result.status === 'completed'
           ? result
-          : await waitForImport(result.id, setMessage)
+          : await waitForImport(result.id, setMessage, t)
       await loadItems(item.accountId)
       if (completed.bookId) {
         navigate(`/reader/${completed.bookId}`)
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '导入失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.importFailed'))
       setMessage('')
     } finally {
       setBusy('')
@@ -151,7 +153,7 @@ export function CloudDrivePage() {
     if (!file || !activeAccount) return
     setBusy('upload')
     setError('')
-    setMessage(`正在上传 ${file.name} 到 WebDAV…`)
+    setMessage(t('cloud.uploadingFile', { name: file.name }))
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -159,11 +161,11 @@ export function CloudDrivePage() {
         `/cloud-drive/accounts/${activeAccount.id}/upload`,
         { method: 'POST', body: formData },
       )
-      const completed = await waitForImport(job.id, setMessage)
+      const completed = await waitForImport(job.id, setMessage, t)
       await loadItems(activeAccount.id)
       if (completed.bookId) navigate(`/reader/${completed.bookId}`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '上传失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.uploadFailed'))
       setMessage('')
     } finally {
       setBusy('')
@@ -171,18 +173,18 @@ export function CloudDrivePage() {
   }
 
   const unbind = async () => {
-    if (!activeAccount || !window.confirm('确定解绑这个 WebDAV 账号吗？已导入书籍不会删除。')) return
+    if (!activeAccount || !window.confirm(t('cloud.unbindConfirm'))) return
     setBusy('unbind')
     try {
       await apiRequest(`/cloud-drive/accounts/${activeAccount.id}`, {
         method: 'DELETE',
         json: {},
       })
-      setMessage('WebDAV 已解绑')
+      setMessage(t('cloud.unbound'))
       setActiveId('')
       await loadAccounts()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '解绑失败')
+      setError(reason instanceof Error ? reason.message : t('cloud.unbindFailed'))
     } finally {
       setBusy('')
     }
@@ -192,12 +194,12 @@ export function CloudDrivePage() {
     <div className="mx-auto w-full max-w-6xl px-4 py-7 md:px-7 md:py-10">
       <button className="inline-flex items-center gap-2 text-ui-md text-muted transition-colors duration-150 hover:text-ink" onClick={() => navigate('/')}>
         <ArrowLeft className="h-4 w-4" />
-        返回书架
+        {t('common.backToShelf')}
       </button>
       <div className="mt-5">
         <p className="text-ui-sm font-medium tracking-wide text-accent-text">CLOUD STORAGE</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">WebDAV</h1>
-        <p className="mt-2 text-ui-md text-muted">支持坚果云、Nextcloud 和兼容 WebDAV 的自建存储。</p>
+        <p className="mt-2 text-ui-md text-muted">{t('cloud.description')}</p>
       </div>
 
       {(message || error) ? (
@@ -221,16 +223,16 @@ export function CloudDrivePage() {
                   <Cloud className="h-5 w-5" />
                 </span>
                 <div>
-                  <h2 className="text-ui-lg font-semibold text-ink">WebDAV 账号</h2>
-                  <p className="mt-0.5 text-ui-sm text-muted">{activeAccount ? '已连接' : '使用第三方应用密码连接'}</p>
+                  <h2 className="text-ui-lg font-semibold text-ink">{t('cloud.account')}</h2>
+                  <p className="mt-0.5 text-ui-sm text-muted">{activeAccount ? t('cloud.connected') : t('cloud.connectHint')}</p>
                 </div>
               </div>
               {activeAccount ? (
                 <div className="flex flex-wrap gap-2">
                   <input ref={uploadInput} className="hidden" type="file" accept=".epub,.pdf,.mobi,.azw,.azw3,.fb2,.fbz,.cbz" onChange={upload} />
-                  <ActionButton busy={busy === 'sync'} onClickAction={() => void sync()} icon={<FolderSync className="h-4 w-4" />}>同步</ActionButton>
-                  <ActionButton busy={busy === 'upload'} onClickAction={() => uploadInput.current?.click()} icon={<Upload className="h-4 w-4" />}>上传</ActionButton>
-                  <ActionButton busy={busy === 'unbind'} onClickAction={() => void unbind()} icon={<Trash2 className="h-4 w-4" />}>解绑</ActionButton>
+                  <ActionButton busy={busy === 'sync'} onClickAction={() => void sync()} icon={<FolderSync className="h-4 w-4" />}>{t('cloud.sync')}</ActionButton>
+                  <ActionButton busy={busy === 'upload'} onClickAction={() => uploadInput.current?.click()} icon={<Upload className="h-4 w-4" />}>{t('cloud.upload')}</ActionButton>
+                  <ActionButton busy={busy === 'unbind'} onClickAction={() => void unbind()} icon={<Trash2 className="h-4 w-4" />}>{t('cloud.unbind')}</ActionButton>
                 </div>
               ) : null}
             </div>
@@ -262,11 +264,11 @@ export function CloudDrivePage() {
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2">
-                  <Input label="显示名称" value={form.displayName} onChangeValue={value => setForm(current => ({ ...current, displayName: value }))} />
-                  <Input label="WebDAV 地址" value={form.serverUrl} onChangeValue={value => setForm(current => ({ ...current, serverUrl: value }))} />
-                  <Input label="账号" value={form.username} onChangeValue={value => setForm(current => ({ ...current, username: value }))} />
-                  <Input label="第三方应用密码" type="password" value={form.password} onChangeValue={value => setForm(current => ({ ...current, password: value }))} />
-                  <Input label="书籍目录" value={form.rootPath} onChangeValue={value => setForm(current => ({ ...current, rootPath: value }))} />
+                  <Input label={t('cloud.displayName')} value={form.displayName} onChangeValue={value => setForm(current => ({ ...current, displayName: value }))} />
+                  <Input label={t('cloud.serverUrl')} value={form.serverUrl} onChangeValue={value => setForm(current => ({ ...current, serverUrl: value }))} />
+                  <Input label={t('cloud.username')} value={form.username} onChangeValue={value => setForm(current => ({ ...current, username: value }))} />
+                  <Input label={t('cloud.appPassword')} type="password" value={form.password} onChangeValue={value => setForm(current => ({ ...current, password: value }))} />
+                  <Input label={t('cloud.booksDirectory')} value={form.rootPath} onChangeValue={value => setForm(current => ({ ...current, rootPath: value }))} />
                   <div className="flex items-end">
                     <button
                       className={`${primaryButtonClass} h-10 w-full`}
@@ -274,7 +276,7 @@ export function CloudDrivePage() {
                       onClick={() => void connect()}
                     >
                       {busy === 'connect' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cloud className="h-4 w-4" />}
-                      绑定 WebDAV
+                      {t('cloud.connect')}
                     </button>
                   </div>
                 </div>
@@ -285,8 +287,8 @@ export function CloudDrivePage() {
           {activeAccount ? (
             <section className="overflow-hidden rounded-xl border border-line bg-surface">
               <div className="border-b border-line p-5">
-                <h2 className="text-ui-lg font-semibold text-ink">远程书籍</h2>
-                <p className="mt-1 text-ui-sm text-muted">同步只读取文件元数据，点击导入后才会下载并解析。</p>
+                <h2 className="text-ui-lg font-semibold text-ink">{t('cloud.remoteBooks')}</h2>
+                <p className="mt-1 text-ui-sm text-muted">{t('cloud.remoteBooksDescription')}</p>
               </div>
               {items.length ? (
                 <div className="divide-y divide-line">
@@ -300,7 +302,7 @@ export function CloudDrivePage() {
                         </div>
                       </div>
                       <span className="hidden rounded-full bg-surface-muted px-2 py-1 text-ui-sm text-muted sm:inline">
-                        {statusLabel(item.syncStatus)}
+                        {statusLabel(item.syncStatus, t)}
                       </span>
                       <button
                         className={primaryButtonClass}
@@ -308,14 +310,14 @@ export function CloudDrivePage() {
                         onClick={() => void importItem(item)}
                       >
                         {busy === `import:${item.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        {item.bookId ? '打开' : '导入'}
+                        {item.bookId ? t('common.open') : t('common.import')}
                       </button>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="px-5 py-16 text-center text-ui-md text-muted">
-                  暂无文件，点击“同步”扫描远程目录。
+                  {t('cloud.empty')}
                 </div>
               )}
             </section>
@@ -373,26 +375,26 @@ function ActionButton({
   )
 }
 
-async function waitForSync(jobId: string, setMessage: (value: string) => void) {
+async function waitForSync(jobId: string, setMessage: (value: string) => void, t: Translate) {
   for (let attempt = 0; attempt < 600; attempt += 1) {
     const job = await apiRequest<SyncJob>(`/cloud-drive/sync-jobs/${jobId}`)
-    setMessage(`正在同步… ${job.processedItems}/${Math.max(job.totalItems, job.processedItems)}`)
+    setMessage(t('cloud.syncProgress', { processed: job.processedItems, total: Math.max(job.totalItems, job.processedItems) }))
     if (job.status === 'completed') return job
-    if (job.status === 'failed') throw new Error(job.errorMessage || '同步失败')
+    if (job.status === 'failed') throw new Error(job.errorMessage || t('cloud.syncFailed'))
     await new Promise(resolve => window.setTimeout(resolve, 1000))
   }
-  throw new Error('同步超时')
+  throw new Error(t('cloud.syncTimeout'))
 }
 
-async function waitForImport(jobId: string, setMessage: (value: string) => void) {
+async function waitForImport(jobId: string, setMessage: (value: string) => void, t: Translate) {
   for (let attempt = 0; attempt < 600; attempt += 1) {
     const job = await apiRequest<ImportJob>(`/shelf/import-jobs/${jobId}`)
-    setMessage(`正在导入书籍… ${job.progress}%`)
+    setMessage(t('cloud.importProgress', { progress: job.progress }))
     if (job.status === 'completed') return job
-    if (job.status === 'failed') throw new Error(job.errorMessage || '导入失败')
+    if (job.status === 'failed') throw new Error(job.errorMessage || t('cloud.importFailed'))
     await new Promise(resolve => window.setTimeout(resolve, 1000))
   }
-  throw new Error('导入超时')
+  throw new Error(t('cloud.importTimeout'))
 }
 
 function formatSize(size: number | null) {
@@ -402,10 +404,10 @@ function formatSize(size: number | null) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-function statusLabel(status: string) {
-  if (status === 'imported') return '已导入'
-  if (status === 'unsupported') return '不支持'
-  if (status === 'importing') return '导入中'
-  if (status === 'error') return '异常'
-  return '可导入'
+function statusLabel(status: string, t: Translate) {
+  if (status === 'imported') return t('cloud.statusImported')
+  if (status === 'unsupported') return t('cloud.statusUnsupported')
+  if (status === 'importing') return t('cloud.statusImporting')
+  if (status === 'error') return t('cloud.statusError')
+  return t('cloud.statusAvailable')
 }

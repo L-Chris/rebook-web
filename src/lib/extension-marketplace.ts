@@ -14,7 +14,9 @@ import {
 } from 'rebook'
 
 export const READER_CONFIG_STORAGE_KEY = 'rebook-web-config'
-export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = 1
+export const AI_CHAT_DEFAULTS_VERSION = 1
+export const TRANSLATION_DEFAULTS_VERSION = 2
+export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = TRANSLATION_DEFAULTS_VERSION
 
 type ExtensionInstallations = Record<string, RebookExtensionInstallation>
 
@@ -40,18 +42,21 @@ export function loadExtensionMarketplaceState(): ExtensionMarketplaceState {
   const stored = readStoredConfig()
   const extensionInstallations = normalizeInstallations(stored.extensionInstallations)
   const storedDefaultsVersion = numberValue(stored.extensionDefaultsVersion)
+  const shouldEnableTranslationByDefault = storedDefaultsVersion < TRANSLATION_DEFAULTS_VERSION
   return normalizeState({
     extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
     extensionCatalogURL: stringValue(stored.extensionCatalogURL),
     extensionCatalogJSON: stringValue(stored.extensionCatalogJSON),
     extensionInstallations,
-    translate: stored.translate === true,
-    professionalTranslation: stored.professionalTranslation === true,
+    translate: shouldEnableTranslationByDefault || stored.translate === true,
+    professionalTranslation: shouldEnableTranslationByDefault
+      ? false
+      : stored.professionalTranslation === true,
     tts: stored.tts === true,
     // AI Chat has always been exposed by the reader UI. Treat legacy configs
     // without an installation record as enabled, while preserving an explicit
     // disabled installation created by the extension store.
-    chat: storedDefaultsVersion < BUILT_IN_EXTENSION_DEFAULTS_VERSION
+    chat: storedDefaultsVersion < AI_CHAT_DEFAULTS_VERSION
       ? true
       : extensionInstallations[AI_CHAT_EXTENSION_ID]
         ? stored.chat !== false && extensionInstallations[AI_CHAT_EXTENSION_ID].enabled !== false

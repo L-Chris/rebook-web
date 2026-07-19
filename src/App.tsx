@@ -9,34 +9,36 @@ import {
 } from './features/auth/AuthPages'
 import { CloudDrivePage } from './features/cloud-drive/CloudDrivePage'
 import { ExtensionStorePage } from './features/extensions/ExtensionStorePage'
+import { LanguageProvider, useI18n } from './features/i18n/LanguageContext'
 import ReaderWorkspace from './features/reader/ReaderWorkspace'
-import { SettingsPage } from './features/settings/SettingsPage'
 import { ShelfPage } from './features/shelf/ShelfPage'
 import { ThemeProvider } from './features/theme/ThemeContext'
 
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <Routes>
-          <Route path="/" element={<ShelfPage />} />
-          <Route path="/extensions" element={<ExtensionStorePage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
-          <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
-          <Route path="/verify-email" element={<VerifyEmailPage />} />
-          <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordPage /></GuestOnly>} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route path="/reader" element={<Navigate to="/" replace />} />
-          <Route path="/reader/:bookId" element={<ShelfReaderPage />} />
-          <Route element={<ProtectedRoute />}>
-            <Route element={<LibraryLayout />}>
-              <Route path="/settings/cloud-drives" element={<CloudDrivePage />} />
+      <LanguageProvider>
+        <AuthProvider>
+          <Routes>
+            <Route path="/" element={<ShelfPage />} />
+            <Route path="/extensions" element={<ExtensionStorePage />} />
+            <Route path="/settings" element={<ShelfPage initialSettingsOpen />} />
+            <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
+            <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordPage /></GuestOnly>} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/reader" element={<Navigate to="/" replace />} />
+            <Route path="/reader/:bookId" element={<ShelfReaderPage />} />
+            <Route element={<ProtectedRoute />}>
+              <Route element={<LibraryLayout />}>
+                <Route path="/settings/cloud-drives" element={<CloudDrivePage />} />
+              </Route>
             </Route>
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthProvider>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthProvider>
+      </LanguageProvider>
     </ThemeProvider>
   )
 }
@@ -82,9 +84,10 @@ function ShelfReaderPage() {
 }
 
 function FullPageLoading() {
+  const { t } = useI18n()
   return (
     <div className="grid h-full place-items-center bg-bg text-ui-md text-muted">
-      加载中…
+      {t('common.loading')}
     </div>
   )
 }

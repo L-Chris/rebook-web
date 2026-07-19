@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { BookOpen, Loader2 } from 'lucide-react'
 import { useAuth } from './AuthContext'
+import { useI18n, type Translate } from '../i18n/LanguageContext'
 import { inputClass, primaryButtonClass } from '../../lib/ui-classes'
 
 export function LoginPage() {
   const auth = useAuth()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const [email, setEmail] = useState('')
@@ -22,26 +24,26 @@ export function LoginPage() {
       const target = (location.state as { from?: string } | null)?.from || '/'
       navigate(target, { replace: true })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '登录失败')
+      setError(reason instanceof Error ? reason.message : t('auth.loginFailed'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <AuthCard title="登录 rebook" description="同步你的书架、阅读进度和 WebDAV 文件">
+    <AuthCard title={t('auth.loginTitle')} description={t('auth.loginDescription')}>
       <form className="space-y-4" onSubmit={submit}>
-        <Field label="邮箱" type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
-        <Field label="密码" type="password" value={password} onChangeValue={setPassword} autoComplete="current-password" />
+        <Field label={t('auth.email')} type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
+        <Field label={t('auth.password')} type="password" value={password} onChangeValue={setPassword} autoComplete="current-password" />
         <FormError message={error} />
-        <SubmitButton busy={busy}>登录</SubmitButton>
+        <SubmitButton busy={busy}>{t('common.signIn')}</SubmitButton>
       </form>
       <div className="mt-5 flex items-center justify-between text-ui-md">
-        <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/register">注册账号</Link>
-        <Link className="text-muted transition-colors duration-150 hover:text-ink" to="/forgot-password">忘记密码</Link>
+        <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/register">{t('auth.registerAccount')}</Link>
+        <Link className="text-muted transition-colors duration-150 hover:text-ink" to="/forgot-password">{t('auth.forgotPassword')}</Link>
       </div>
       <Link className="mt-6 block text-center text-ui-sm text-muted transition-colors duration-150 hover:text-ink" to="/">
-        暂不登录，返回本地书架
+        {t('auth.continueOffline')}
       </Link>
     </AuthCard>
   )
@@ -49,6 +51,7 @@ export function LoginPage() {
 
 export function RegisterPage() {
   const auth = useAuth()
+  const { t } = useI18n()
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -60,7 +63,7 @@ export function RegisterPage() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (password !== confirmPassword) {
-      setError('两次输入的密码不一致')
+      setError(t('auth.passwordMismatch'))
       return
     }
     setBusy(true)
@@ -70,25 +73,25 @@ export function RegisterPage() {
       const result = await auth.register({ email, password, displayName })
       setMessage(result.message)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '注册失败')
+      setError(reason instanceof Error ? reason.message : t('auth.registerFailed'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <AuthCard title="创建账号" description="邮箱验证后即可使用云书架">
+    <AuthCard title={t('auth.createAccount')} description={t('auth.createAccountDescription')}>
       <form className="space-y-4" onSubmit={submit}>
-        <Field label="昵称（可选）" value={displayName} onChangeValue={setDisplayName} autoComplete="nickname" />
-        <Field label="邮箱" type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
-        <Field label="密码（至少 12 个字符）" type="password" value={password} onChangeValue={setPassword} autoComplete="new-password" />
-        <Field label="确认密码" type="password" value={confirmPassword} onChangeValue={setConfirmPassword} autoComplete="new-password" />
+        <Field label={t('auth.displayNameOptional')} value={displayName} onChangeValue={setDisplayName} autoComplete="nickname" required={false} />
+        <Field label={t('auth.email')} type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
+        <Field label={t('auth.passwordRequirement')} type="password" value={password} onChangeValue={setPassword} autoComplete="new-password" />
+        <Field label={t('auth.confirmPassword')} type="password" value={confirmPassword} onChangeValue={setConfirmPassword} autoComplete="new-password" />
         <FormError message={error} />
         {message ? <Notice>{message}</Notice> : null}
-        <SubmitButton busy={busy}>注册</SubmitButton>
+        <SubmitButton busy={busy}>{t('auth.register')}</SubmitButton>
       </form>
       <p className="mt-5 text-center text-ui-md text-muted">
-        已有账号？ <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/login">登录</Link>
+        {t('auth.alreadyHaveAccount')} <Link className="text-accent-text transition-colors duration-150 hover:text-accent-hover" to="/login">{t('common.signIn')}</Link>
       </p>
     </AuthCard>
   )
@@ -96,11 +99,12 @@ export function RegisterPage() {
 
 export function VerifyEmailPage() {
   const auth = useAuth()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const token = params.get('token') || ''
   const started = useRef(false)
-  const [status, setStatus] = useState(token ? '正在验证邮箱…' : '验证链接缺少 token')
+  const [status, setStatus] = useState(token ? t('auth.verifying') : t('auth.missingVerifyToken'))
   const [failed, setFailed] = useState(!token)
 
   useEffect(() => {
@@ -108,20 +112,20 @@ export function VerifyEmailPage() {
     started.current = true
     auth.verifyEmail(token)
       .then(() => {
-        setStatus('邮箱验证成功，正在进入书架…')
+        setStatus(t('auth.verifiedRedirecting'))
         window.setTimeout(() => navigate('/', { replace: true }), 600)
       })
       .catch(reason => {
         setFailed(true)
-        setStatus(reason instanceof Error ? reason.message : '邮箱验证失败')
+        setStatus(reason instanceof Error ? reason.message : t('auth.verifyFailed'))
       })
-  }, [auth, navigate, token])
+  }, [auth, navigate, t, token])
 
   return (
-    <AuthCard title="邮箱验证" description={status}>
+    <AuthCard title={t('auth.verifyTitle')} description={status}>
       {failed ? (
         <Link className={`${primaryButtonClass} h-10 w-full`} to="/login">
-          返回登录
+          {t('auth.backToLogin')}
         </Link>
       ) : (
         <div className="flex justify-center py-8 text-accent-text">
@@ -134,6 +138,7 @@ export function VerifyEmailPage() {
 
 export function ForgotPasswordPage() {
   const auth = useAuth()
+  const { t } = useI18n()
   const [email, setEmail] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -147,22 +152,22 @@ export function ForgotPasswordPage() {
       const result = await auth.requestPasswordReset(email)
       setMessage(result.message)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '发送失败')
+      setError(reason instanceof Error ? reason.message : t('auth.sendFailed'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <AuthCard title="找回密码" description="我们会向已注册邮箱发送重置链接">
+    <AuthCard title={t('auth.forgotTitle')} description={t('auth.forgotDescription')}>
       <form className="space-y-4" onSubmit={submit}>
-        <Field label="邮箱" type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
+        <Field label={t('auth.email')} type="email" value={email} onChangeValue={setEmail} autoComplete="email" />
         <FormError message={error} />
         {message ? <Notice>{message}</Notice> : null}
-        <SubmitButton busy={busy}>发送重置链接</SubmitButton>
+        <SubmitButton busy={busy}>{t('auth.sendResetLink')}</SubmitButton>
       </form>
       <Link className="mt-5 block text-center text-ui-md text-muted transition-colors duration-150 hover:text-ink" to="/login">
-        返回登录
+        {t('auth.backToLogin')}
       </Link>
     </AuthCard>
   )
@@ -170,6 +175,7 @@ export function ForgotPasswordPage() {
 
 export function ResetPasswordPage() {
   const auth = useAuth()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const token = params.get('token') || ''
@@ -181,11 +187,11 @@ export function ResetPasswordPage() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!token) {
-      setError('重置链接缺少 token')
+      setError(t('auth.missingResetToken'))
       return
     }
     if (password !== confirmPassword) {
-      setError('两次输入的密码不一致')
+      setError(t('auth.passwordMismatch'))
       return
     }
     setBusy(true)
@@ -194,19 +200,19 @@ export function ResetPasswordPage() {
       await auth.resetPassword(token, password)
       navigate('/', { replace: true })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '密码重置失败')
+      setError(reason instanceof Error ? reason.message : t('auth.resetFailed'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <AuthCard title="设置新密码" description="新密码至少包含 12 个字符">
+    <AuthCard title={t('auth.newPasswordTitle')} description={t('auth.newPasswordDescription')}>
       <form className="space-y-4" onSubmit={submit}>
-        <Field label="新密码" type="password" value={password} onChangeValue={setPassword} autoComplete="new-password" />
-        <Field label="确认新密码" type="password" value={confirmPassword} onChangeValue={setConfirmPassword} autoComplete="new-password" />
+        <Field label={t('auth.newPassword')} type="password" value={password} onChangeValue={setPassword} autoComplete="new-password" />
+        <Field label={t('auth.confirmNewPassword')} type="password" value={confirmPassword} onChangeValue={setConfirmPassword} autoComplete="new-password" />
         <FormError message={error} />
-        <SubmitButton busy={busy}>重置密码</SubmitButton>
+        <SubmitButton busy={busy}>{t('auth.resetPassword')}</SubmitButton>
       </form>
     </AuthCard>
   )
@@ -243,12 +249,14 @@ function Field({
   onChangeValue,
   type = 'text',
   autoComplete,
+  required = true,
 }: {
   label: string
   value: string
   onChangeValue: (value: string) => void
   type?: string
   autoComplete?: string
+  required?: boolean
 }) {
   return (
     <label className="grid gap-1.5">
@@ -258,7 +266,7 @@ function Field({
         type={type}
         value={value}
         autoComplete={autoComplete}
-        required={label !== '昵称（可选）'}
+        required={required}
         onChange={event => onChangeValue(event.target.value)}
       />
     </label>
@@ -279,9 +287,10 @@ function SubmitButton({ busy, children }: { busy: boolean; children: ReactNode }
 }
 
 function FormError({ message }: { message: string }) {
+  const { t } = useI18n()
   return message ? (
     <div className="rounded-xl border border-danger-line bg-danger-soft px-3.5 py-2.5 text-ui-md text-danger">
-      {translateError(message)}
+      {translateError(message, t)}
     </div>
   ) : null
 }
@@ -294,10 +303,10 @@ function Notice({ children }: { children: ReactNode }) {
   )
 }
 
-function translateError(message: string) {
-  if (message.includes('email or password')) return '邮箱或密码不正确'
-  if (message.includes('verification is required')) return '请先完成邮箱验证'
-  if (message.includes('12 to 128')) return '密码长度需要在 12 到 128 个字符之间'
-  if (message.includes('too many requests')) return '操作过于频繁，请稍后再试'
+function translateError(message: string, t: Translate) {
+  if (message.includes('email or password')) return t('auth.invalidCredentials')
+  if (message.includes('verification is required')) return t('auth.verificationRequired')
+  if (message.includes('12 to 128')) return t('auth.passwordLength')
+  if (message.includes('too many requests')) return t('auth.tooManyRequests')
   return message
 }

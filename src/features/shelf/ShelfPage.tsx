@@ -24,6 +24,7 @@ import {
   UserRound,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
+import { useI18n } from '../i18n/LanguageContext'
 import { useAppTheme } from '../theme/ThemeContext'
 import {
   apiRequest,
@@ -37,12 +38,21 @@ import {
   listLocalBooks,
   removeLocalBook,
 } from '../../lib/local-library'
+import { ensureReaderFontsLoaded } from '../../lib/reader-fonts'
 import { iconButtonClass, menuRowClass } from '../../lib/ui-classes'
+import {
+  ReaderSettingsDialog,
+  loadReaderConfig,
+  saveReaderConfig,
+  type DemoConfig,
+  type SettingsSection,
+} from '../reader/ReaderWorkspace'
 
 const SUPPORTED_BOOKS = '.epub,.pdf,.mobi,.azw,.azw3,.fb2,.fbz,.cbz'
 
-export function ShelfPage() {
+export function ShelfPage({ initialSettingsOpen = false }: { initialSettingsOpen?: boolean } = {}) {
   const auth = useAuth()
+  const { t } = useI18n()
   const { theme, toggleTheme } = useAppTheme()
   const navigate = useNavigate()
   const fileInput = useRef<HTMLInputElement>(null)
@@ -52,6 +62,9 @@ export function ShelfPage() {
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(initialSettingsOpen)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  const [settingsConfig, setSettingsConfig] = useState<DemoConfig>(() => loadReaderConfig())
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -68,16 +81,16 @@ export function ShelfPage() {
           const cloud = await apiRequest<ShelfList>(`/shelf/items?${params}`)
           cloudItems = cloud.items
         } catch (reason) {
-          setError(reason instanceof Error ? reason.message : '云端书架加载失败')
+          setError(reason instanceof Error ? reason.message : t('shelf.cloudLoadFailed'))
         }
       }
       setItems([...localItems, ...cloudItems])
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '本地书架加载失败')
+      setError(reason instanceof Error ? reason.message : t('shelf.localLoadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [auth.user, query])
+  }, [auth.user, query, t])
 
   useEffect(() => {
     void load()
@@ -99,19 +112,48 @@ export function ShelfPage() {
     }
   }, [menuOpen])
 
+  useEffect(() => {
+    if (!settingsOpen) return
+    void ensureReaderFontsLoaded(settingsConfig)
+  }, [
+    settingsOpen,
+    settingsConfig.defaultFont,
+    settingsConfig.defaultCJKFont,
+    settingsConfig.serifFont,
+    settingsConfig.sansSerifFont,
+    settingsConfig.monospaceFont,
+  ])
+
+  const openSettings = () => {
+    setMenuOpen(false)
+    setSettingsConfig(loadReaderConfig())
+    setSettingsSection('general')
+    setSettingsOpen(true)
+  }
+
+  const closeSettings = () => {
+    setSettingsOpen(false)
+    if (initialSettingsOpen) navigate('/', { replace: true })
+  }
+
+  const applySettings = () => {
+    saveReaderConfig(settingsConfig)
+    closeSettings()
+  }
+
   const importBooks = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || [])
     event.target.value = ''
     if (!files.length) return
     setUploading(true)
     setError('')
-    setNotice(`正在导入 ${files.length} 本书…`)
+    setNotice(t('shelf.importing', { count: files.length }))
     try {
       for (const file of files) await importLocalBook(file)
       await load()
-      setNotice(`${files.length} 本书已保存在此浏览器`)
+      setNotice(t('shelf.imported', { count: files.length }))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '导入失败')
+      setError(reason instanceof Error ? reason.message : t('shelf.importFailed'))
       setNotice('')
     } finally {
       setUploading(false)
@@ -119,7 +161,7 @@ export function ShelfPage() {
   }
 
   const removeItem = async (item: ShelfItem) => {
-    if (!window.confirm(`确定把《${item.title}》移出书架吗？`)) return
+    if (!window.confirm(t('shelf.removeConfirm', { title: item.title }))) return
     try {
       if (isLocalBookId(item.id)) {
         await removeLocalBook(item.id)
@@ -131,7 +173,7 @@ export function ShelfPage() {
       }
       await load()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '移除失败')
+      setError(reason instanceof Error ? reason.message : t('shelf.removeFailed'))
     }
   }
 
@@ -152,7 +194,7 @@ export function ShelfPage() {
             <Search className="h-4 w-4 shrink-0 text-muted" />
             <input
               className="min-w-0 flex-1 bg-transparent text-ui-md text-ink outline-none placeholder:text-muted"
-              placeholder={`搜索 ${items.length} 本书…`}
+              placeholder={t('shelf.searchPlaceholder', { count: items.length })}
               value={query}
               onChange={event => setQuery(event.target.value)}
             />
@@ -162,8 +204,8 @@ export function ShelfPage() {
           <button
             className={iconButtonClass}
             type="button"
-            title="导入本地书籍"
-            aria-label="导入本地书籍"
+            title={t('shelf.importLocal')}
+            aria-label={t('shelf.importLocal')}
             disabled={uploading}
             onClick={() => fileInput.current?.click()}
           >
@@ -174,7 +216,7 @@ export function ShelfPage() {
             <button
               className={`${iconButtonClass} ${menuOpen ? 'bg-accent-soft text-accent-text' : ''}`}
               type="button"
-              aria-label="打开菜单"
+              aria-label={t('shelf.openMenu')}
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen(open => !open)}
             >
@@ -191,37 +233,37 @@ export function ShelfPage() {
                       <div className="truncate text-ui-md font-medium text-ink">
                         {auth.user.displayName || auth.user.email}
                       </div>
-                      <div className="mt-0.5 text-ui-sm text-muted">云端书架已连接</div>
+                      <div className="mt-0.5 text-ui-sm text-muted">{t('shelf.cloudConnected')}</div>
                     </div>
                   </div>
                 ) : (
                   <MenuAction
                     icon={<LogIn className="h-4 w-4" />}
-                    label="登录"
+                    label={t('common.signIn')}
                     onClick={() => navigate('/login', { state: { from: '/' } })}
                   />
                 )}
                 <div className="mx-1 my-1 border-t border-line" />
                 <MenuAction
                   icon={theme === 'light' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                  label={theme === 'light' ? 'Light Mode' : 'Dark Mode'}
+                  label={theme === 'light' ? t('common.lightMode') : t('common.darkMode')}
                   onClick={toggleTheme}
                 />
                 <div className="mx-1 my-1 border-t border-line" />
                 <MenuAction
                   icon={<Blocks className="h-4 w-4" />}
-                  label="扩展商店"
+                  label={t('shelf.extensionStore')}
                   onClick={() => navigate('/extensions')}
                 />
                 <MenuAction
                   icon={<Settings className="h-4 w-4" />}
-                  label="设置"
-                  onClick={() => navigate('/settings')}
+                  label={t('common.settings')}
+                  onClick={openSettings}
                 />
                 {auth.user ? (
                   <MenuAction
                     icon={<LogOut className="h-4 w-4" />}
-                    label="退出登录"
+                    label={t('common.signOut')}
                     onClick={() => void auth.logout().then(() => setMenuOpen(false))}
                   />
                 ) : null}
@@ -266,17 +308,28 @@ export function ShelfPage() {
                 <span className="grid aspect-[2/3] w-full place-items-center rounded-[3px] bg-surface-raised text-muted shadow-menu transition group-hover:-translate-y-1 group-hover:text-ink group-hover:shadow-dialog">
                   <Plus className="h-12 w-12 stroke-[1.2]" />
                 </span>
-                <span className="mt-3 block text-ui-md font-medium text-muted">导入本地书籍</span>
-                <span className="mt-1 block text-ui-sm text-muted">保存在此浏览器</span>
+                <span className="mt-3 block text-ui-md font-medium text-muted">{t('shelf.importLocal')}</span>
+                <span className="mt-1 block text-ui-sm text-muted">{t('shelf.savedInBrowser')}</span>
               </button>
             ) : null}
           </div>
         )}
 
         {!loading && query && !items.length ? (
-          <div className="py-20 text-center text-ui-md text-muted">没有找到匹配的书籍</div>
+          <div className="py-20 text-center text-ui-md text-muted">{t('shelf.noMatches')}</div>
         ) : null}
       </div>
+
+      {settingsOpen ? (
+        <ReaderSettingsDialog
+          section={settingsSection}
+          setSection={setSettingsSection}
+          config={settingsConfig}
+          setConfig={setSettingsConfig}
+          onClose={closeSettings}
+          onApply={applySettings}
+        />
+      ) : null}
     </main>
   )
 }
@@ -290,6 +343,7 @@ function BookCard({
   onOpen(): void
   onRemove(): void
 }) {
+  const { t } = useI18n()
   const local = isLocalBookId(item.id)
   const progress = Math.round(item.progress * 100)
   return (
@@ -304,7 +358,7 @@ function BookCard({
             <img
               className="h-full w-full object-cover"
               src={assetUrl(item.coverUrl)}
-              alt={`${item.title}封面`}
+              alt={t('shelf.coverAlt', { title: item.title })}
             />
           ) : (
             <span
@@ -331,8 +385,8 @@ function BookCard({
         <button
           className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-ink/65 text-surface opacity-0 backdrop-blur transition-colors duration-150 hover:bg-danger hover:text-accent-contrast group-hover:opacity-100 focus:opacity-100"
           type="button"
-          title="移出书架"
-          aria-label={`移除${item.title}`}
+          title={t('shelf.remove')}
+          aria-label={t('shelf.removeAria', { title: item.title })}
           onClick={onRemove}
         >
           <Trash2 className="h-4 w-4" />
@@ -349,7 +403,7 @@ function BookCard({
         <span>{progress}%</span>
         <span className="inline-flex items-center gap-1">
           {local ? <HardDrive className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
-          {local ? '本地' : '云端'}
+          {local ? t('common.local') : t('common.cloud')}
         </span>
       </div>
     </article>

@@ -1,4 +1,5 @@
-import { Fragment, isValidElement, useCallback, useEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react'
+import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type CSSProperties, type HTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   ExternalLink,
   Info,
+  Languages,
   ListTree,
   Loader2,
   LogIn,
@@ -45,6 +47,8 @@ import {
   createRebookExtensionManager,
   createTTSExtension,
   createTranslationExtension,
+  createBrowserTranslationProvider,
+  isBrowserTranslationSupported,
   AI_CHAT_EXTENSION_ID,
   PROFESSIONAL_TRANSLATION_EXTENSION_ID,
   TRANSLATION_EXTENSION_ID,
@@ -63,6 +67,8 @@ import {
   type RebookExtensionInstallation,
   type RebookExtensionManifest,
   type RendererStyles,
+  type TranslationRuntime,
+  type TranslationRuntimeState,
   type TOCItem,
   type TOCViewItem,
   parseRebookExtensionCatalogEntries,
@@ -92,7 +98,9 @@ import {
   type ReaderDefaultFont,
 } from '../../lib/reader-fonts'
 import {
+  AI_CHAT_DEFAULTS_VERSION,
   BUILT_IN_EXTENSION_DEFAULTS_VERSION,
+  TRANSLATION_DEFAULTS_VERSION,
   READER_CONFIG_STORAGE_KEY,
 } from '../../lib/extension-marketplace'
 import { useAppTheme } from '../theme/ThemeContext'
@@ -104,15 +112,21 @@ import {
   roundIconButtonClass,
   toolbarButtonClass,
 } from '../../lib/ui-classes'
+import {
+  normalizeAppLanguage,
+  useI18n,
+  type AppLanguage,
+  type Translate,
+} from '../i18n/LanguageContext'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
 type SidebarView = 'toc' | 'search'
-type SettingsSection = 'font' | 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
+export type SettingsSection = 'general' | 'font' | 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
-type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
+export type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
 
-interface DemoConfig {
+export interface DemoConfig {
   layout: 'paginated' | 'scrolled'
   spread: string
   fixedPainter: string
@@ -127,6 +141,8 @@ interface DemoConfig {
   hyphenate: boolean
   debug: boolean
   translate: boolean
+  translationRuntimeEnabled: boolean
+  translationProvider: 'browser' | 'ai'
   translateTOC: boolean
   professionalTranslation: boolean
   professionalServiceBaseUrl: string
@@ -134,6 +150,7 @@ interface DemoConfig {
   baseURL: string
   apiKey: string
   model: string
+  translationTargetLanguage: AppLanguage | 'interface'
   translateMode: 'bilingual' | 'replace'
   prefetchPages: string
   tts: boolean
@@ -294,6 +311,8 @@ const MAX_SEARCH_RESULTS = 80
 const MAX_CHAT_REFERENCE_OPTIONS = 120
 const MAX_CHAT_REFERENCE_SUGGESTIONS = 8
 const MAX_CHAT_REFERENCE_EXCERPT = 220
+const READER_SIDEBAR_PINNED_STORAGE_KEY = 'rebook-reader-sidebar-pinned'
+const STORY_MEMORY_ENABLED = import.meta.env.DEV
 const configuredRebookServiceUrl = String(import.meta.env.VITE_REBOOK_SERVICE_URL ?? '').trim()
 const defaultRebookServiceUrl = configuredRebookServiceUrl
   || (import.meta.env.DEV ? 'http://127.0.0.1:8083' : 'https://read.rethinkos.com/api')
@@ -307,7 +326,7 @@ interface ChatCommand {
   buildPrompt(args: string): string
 }
 
-const CHAT_COMMANDS: ChatCommand[] = [
+const ZH_CHAT_COMMANDS: ChatCommand[] = [
   {
     name: '/summary',
     description: '总结当前章节内容',
@@ -378,6 +397,103 @@ const CHAT_COMMANDS: ChatCommand[] = [
   },
 ]
 
+const EN_CHAT_COMMANDS: ChatCommand[] = [
+  {
+    name: '/summary',
+    description: 'Summarize the current chapter',
+    insertText: '/summary',
+    buildPrompt: () => 'Summarize the current chapter in English. Start with a one-sentence overview, then list the key points and explain any important terms.',
+  },
+  {
+    name: '/search',
+    description: 'Search the book and organize an answer',
+    insertText: '/search ',
+    requiresArgs: true,
+    missingArgsMessage: 'Enter a search query, for example `/search feedback loops`.',
+    buildPrompt: args => `Search this book for information related to “${args}”, using the search tool first. Answer in English, list the most relevant chapters or passages, and briefly explain their context.`,
+  },
+  {
+    name: '/rewrite',
+    description: 'Rewrite the current chapter',
+    insertText: '/rewrite ',
+    buildPrompt: args => {
+      const extra = args ? `\nAdditional rewrite requirements: ${args}` : ''
+      return `Rewrite the current chapter in clear, accessible English. You must call rewriteBlocks to update the rendered text instead of only pasting a rewrite in the answer. Preserve the original information, terminology, and logic; do not modify images or tables. Briefly confirm completion when finished.${extra}`
+    },
+  },
+  {
+    name: '/extract',
+    description: 'Extract key concepts from the current chapter',
+    insertText: '/extract',
+    buildPrompt: () => 'Extract the key concepts from the current chapter in English. List the concepts, explain their meaning and role in the chapter, describe their relationships, and add clickable citations for chapter-specific claims.',
+  },
+  {
+    name: '/story-index',
+    description: 'Index story memory for this book',
+    insertText: '/story-index',
+    buildPrompt: args => {
+      const extra = args ? `\nAdditional indexing requirements: ${args}` : ''
+      return `Call indexStoryMemory to build the story-memory index for the current backend book. Index the first 80 chunks by default, then briefly report the status, bookId, and indexedChunks.${extra}`
+    },
+  },
+  {
+    name: '/timeline',
+    description: 'Build a timeline of story events',
+    insertText: '/timeline ',
+    buildPrompt: args => `Use the story-memory tools to build an event timeline for this book. ${args ? `Focus on: ${args}. ` : ''}Call getStoryTimeline first and use searchBook or getContent for supporting passages when needed. Answer in English and add clickable citations to key events.`,
+  },
+  {
+    name: '/profile',
+    description: 'Look up character details',
+    insertText: '/profile ',
+    requiresArgs: true,
+    missingArgsMessage: 'Enter a character name, for example `/profile Harry`.',
+    buildPrompt: args => `Use the story-memory tools to create a profile for “${args}”. Call getCharacterProfile; explain identity, aliases, personality or motivation, major actions, and supporting appearances. Answer in English with clickable citations for key conclusions.`,
+  },
+  {
+    name: '/relations',
+    description: 'Look up character relationships',
+    insertText: '/relations ',
+    requiresArgs: true,
+    missingArgsMessage: 'Enter a character name, for example `/relations Harry`.',
+    buildPrompt: args => `Use the story-memory tools to explain the relationships around “${args}”. Call getCharacterRelationships and, if needed, getCharacterProfile or searchStoryMemory. Answer in English with clickable citations.`,
+  },
+  {
+    name: '/entities',
+    description: 'Extract characters, places, and events',
+    insertText: '/entities ',
+    buildPrompt: args => `Use the story-memory tools to extract characters, places, organizations, and events from this book. ${args ? `Filter requirements: ${args}. ` : ''}Call getStoryEntities, group the results by type, answer in English, and include clickable citations where possible.`,
+  },
+]
+
+function getChatCommands(language: AppLanguage): ChatCommand[] {
+  const commands = language === 'en' ? EN_CHAT_COMMANDS : ZH_CHAT_COMMANDS
+  if (STORY_MEMORY_ENABLED) return commands
+  return commands.filter(command => ![
+    '/story-index',
+    '/timeline',
+    '/profile',
+    '/relations',
+    '/entities',
+  ].includes(command.name))
+}
+
+function readSidebarPinnedPreference(): boolean {
+  try {
+    return localStorage.getItem(READER_SIDEBAR_PINNED_STORAGE_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function writeSidebarPinnedPreference(pinned: boolean): void {
+  try {
+    localStorage.setItem(READER_SIDEBAR_PINNED_STORAGE_KEY, String(pinned))
+  } catch {
+    // Keep the preference for this session when storage is unavailable.
+  }
+}
+
 const defaultConfig: DemoConfig = {
   layout: 'paginated',
   spread: '2',
@@ -388,7 +504,9 @@ const defaultConfig: DemoConfig = {
   overrideBookFonts: false,
   hyphenate: true,
   debug: false,
-  translate: false,
+  translate: true,
+  translationRuntimeEnabled: false,
+  translationProvider: 'browser',
   translateTOC: false,
   professionalTranslation: false,
   professionalServiceBaseUrl: defaultRebookServiceUrl,
@@ -396,6 +514,7 @@ const defaultConfig: DemoConfig = {
   baseURL: '',
   apiKey: '',
   model: '',
+  translationTargetLanguage: 'interface',
   translateMode: 'bilingual',
   prefetchPages: '2',
   tts: false,
@@ -426,16 +545,32 @@ const defaultConfig: DemoConfig = {
 }
 
 function readStoryMemoryToolConfig(config: DemoConfig): StoryMemoryToolConfig | null {
+  if (!STORY_MEMORY_ENABLED) return null
   const serviceBaseUrl = config.professionalServiceBaseUrl.trim()
   const bookId = config.professionalBookId.trim()
   if (!serviceBaseUrl || !bookId) return null
   return { serviceBaseUrl, bookId }
 }
 
-function buildStoryMemorySystemPrompt(config: DemoConfig): string | undefined {
+function buildStoryMemorySystemPrompt(config: DemoConfig, language: AppLanguage): string {
   const storyMemory = readStoryMemoryToolConfig(config)
-  if (!storyMemory) return undefined
+  const languageInstruction = language === 'en'
+    ? 'Respond in English unless the user explicitly asks for another language.'
+    : '除非用户明确要求其他语言，否则请使用简体中文回答。'
+  if (!storyMemory) return languageInstruction
+  if (language === 'en') {
+    return [
+      languageInstruction,
+      '# Story Memory tools',
+      '- AI Chat is connected to rebook-service story memory for cross-chapter retrieval of characters, places, organizations, events, relationships, profiles, and timelines.',
+      '- Prefer getStoryTimeline, getStoryEntities, getCharacterProfile, getCharacterRelationships, or searchStoryMemory for questions about timelines, relationships, character details, backgrounds, places, organizations, events, or causality.',
+      '- If story-memory evidence lacks rebook://j/ citations, call searchBook, getContent, or getCurrentContext to add source passages.',
+      '- Only call indexStoryMemory when the user explicitly asks to index, build, or refresh story memory.',
+      `- Current story-memory bookId: ${storyMemory.bookId}`,
+    ].join('\n')
+  }
   return [
+    languageInstruction,
     '# Story Memory 工具',
     '- 当前 AI Chat 已接入 rebook-service story memory，可用于跨章节检索人物、地点、组织、事件、人物关系、人物细节和故事时间线。',
     '- 当用户询问“时间线”“人物关系”“人物细节”“角色背景”“地点/组织/事件”“前因后果”时，优先调用 story memory 工具：getStoryTimeline、getStoryEntities、getCharacterProfile、getCharacterRelationships 或 searchStoryMemory。',
@@ -674,6 +809,7 @@ function ReaderWorkspace({
   onLogin,
   onLogout,
 }: ReaderWorkspaceProps) {
+  const { language, t } = useI18n()
   const viewerRef = useRef<HTMLDivElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const readerRef = useRef<any>(null)
@@ -687,17 +823,18 @@ function ReaderWorkspace({
     locator: ReturnType<typeof createShelfLocator>
   } | null>(null)
   const ttsAbortRef = useRef<AbortController | null>(null)
+  const translationRuntimeUnsubscribeRef = useRef<(() => void) | null>(null)
   const extensionRuntimeCacheRef = useRef(new Map<string, { installUrl: string; extension: RebookExtension }>())
   const ttsPlayer = useMemo(() => createBrowserTTSAudioPlayer(), [])
 
-  const [config, setConfig] = useState<DemoConfig>(() => loadConfig())
+  const [config, setConfig] = useState<DemoConfig>(() => loadReaderConfig())
   const configRef = useRef(config)
   const { theme: appTheme } = useAppTheme()
   const [draftConfig, setDraftConfig] = useState<DemoConfig>(config)
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
   const [extensionRuntimeStatus, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('font')
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [book, setBook] = useState<any>(null)
   const [libraryItem, setLibraryItem] = useState<ShelfItem | null>(null)
   const [bookTitle, setBookTitle] = useState('')
@@ -707,20 +844,14 @@ function ReaderWorkspace({
   const [location, setLocation] = useState<any>(null)
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024)
   const [sidebarView, setSidebarView] = useState<SidebarView>('toc')
-  const [sidebarPinned, setSidebarPinned] = useState(() => {
-    try {
-      return localStorage.getItem('rebook-reader-sidebar-pinned') !== 'false'
-    } catch {
-      return true
-    }
-  })
+  const [sidebarPinned, setSidebarPinned] = useState(readSidebarPinnedPreference)
   const [activePanel, setActivePanel] = useState<Panel>(null)
-  const [status, setStatus] = useState(libraryBookId ? '正在加载书籍…' : '请从书架选择一本书')
+  const [status, setStatus] = useState(libraryBookId ? t('reader.loadingBook') : t('reader.chooseBook'))
   const [busy, setBusy] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchScope, setSearchScope] = useState<'unit' | 'book'>('book')
   const [searchResults, setSearchResults] = useState<SearchItem[]>([])
-  const [searchStatus, setSearchStatus] = useState('书籍加载后即可搜索。')
+  const [searchStatus, setSearchStatus] = useState(t('reader.searchUnavailable'))
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([])
@@ -730,7 +861,11 @@ function ReaderWorkspace({
   const [chatPanelWidth, setChatPanelWidth] = useState(() => clampPanelWidth(config.chatPanelWidth))
   const [storyUploadBusy, setStoryUploadBusy] = useState(false)
   const [storyUploadStatus, setStoryUploadStatus] = useState('')
-  const [ttsStatus, setTTSStatus] = useState('TTS plugin disabled.')
+  const [ttsStatus, setTTSStatus] = useState(t('reader.ttsDisabled'))
+  const [translationRuntimeState, setTranslationRuntimeState] = useState<TranslationRuntimeState>(
+    config.translationRuntimeEnabled ? 'idle' : 'paused',
+  )
+  const [translationRuntimeError, setTranslationRuntimeError] = useState('')
   const runtimeExtensionLoadKey = useMemo(() => JSON.stringify({
     catalog: config.extensionCatalogJSON,
     installations: config.extensionInstallations,
@@ -763,13 +898,13 @@ function ReaderWorkspace({
     draftConfig.fontSize,
   ])
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('rebook-reader-sidebar-pinned', String(sidebarPinned))
-    } catch {
-      // Keep the preference for this session when storage is unavailable.
-    }
-  }, [sidebarPinned])
+  const toggleSidebarPinned = useCallback(() => {
+    setSidebarPinned(current => {
+      const next = !current
+      writeSidebarPinnedPreference(next)
+      return next
+    })
+  }, [])
 
   const replaceBookCover = useCallback((cover: Blob | null) => {
     if (bookCoverUrlRef.current) URL.revokeObjectURL(bookCoverUrlRef.current)
@@ -1117,29 +1252,40 @@ function ReaderWorkspace({
           plugins.push(createProfessionalTranslationExtension({
             serviceBaseUrl: getRebookServiceOrigin(cfg.professionalServiceBaseUrl),
             bookId: cfg.professionalBookId.trim(),
-            targetLanguage: 'zh-CN',
+            targetLanguage: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language),
             mode: () => configRef.current.translateMode,
             prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
             onUpdate,
             onStatus: status => appendDebug('translation status', status),
             pipeline: {
               audience: 'general demo readers',
-              style: 'Faithful, precise, publication-quality Chinese.',
+              style: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language) === 'en'
+                ? 'Faithful, precise, publication-quality English.'
+                : 'Faithful, precise, publication-quality Simplified Chinese.',
             },
           }))
         }
-      } else if (cfg.apiKey.trim()) {
-        const model = createModel(cfg.apiKey, cfg.baseURL, cfg.model)
-        if (model) {
+      } else {
+        const commonOptions = {
+          targetLanguage: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language),
+          initiallyEnabled: cfg.translationRuntimeEnabled,
+          mode: () => configRef.current.translateMode,
+          translateTOC: () => configRef.current.translateTOC,
+          prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
+          onTOCUpdate: () => refreshTOC(),
+          onUpdate,
+        }
+        if (cfg.translationProvider === 'browser') {
           plugins.push(createTranslationExtension({
-            model,
-            targetLanguage: 'zh-CN',
-            mode: () => configRef.current.translateMode,
-            translateTOC: () => configRef.current.translateTOC,
-            prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
-            onTOCUpdate: () => refreshTOC(),
-            onUpdate,
+            ...commonOptions,
+            provider: createBrowserTranslationProvider({
+              onAvailabilityChange: availability => appendDebug('browser translation availability', availability),
+              onDownloadProgress: progress => appendDebug('browser translation download', { progress }),
+            }),
           }))
+        } else if (cfg.apiKey.trim()) {
+          const model = createModel(cfg.apiKey, cfg.baseURL, cfg.model)
+          if (model) plugins.push(createTranslationExtension({ ...commonOptions, model }))
         }
       }
     }
@@ -1173,11 +1319,13 @@ function ReaderWorkspace({
       if (model) {
         plugins.push(createAIChatExtension({
           model,
-          system: () => buildStoryMemorySystemPrompt(configRef.current),
-          extraTools: () => createStoryMemoryTools(
-            readStoryMemoryToolConfig(configRef.current),
-            event => appendDebug('story memory tool', event),
-          ),
+          system: () => buildStoryMemorySystemPrompt(configRef.current, language),
+          extraTools: () => STORY_MEMORY_ENABLED
+            ? createStoryMemoryTools(
+                readStoryMemoryToolConfig(configRef.current),
+                event => appendDebug('story memory tool', event),
+              )
+            : {},
           maxContentChars: () => Number(configRef.current.chatMaxContentChars) || Number(defaultConfig.chatMaxContentChars),
           maxContextChars: () => Math.max(Number(configRef.current.chatMaxContentChars) || Number(defaultConfig.chatMaxContentChars), 20000),
           onDocumentEdit: event => {
@@ -1199,7 +1347,7 @@ function ReaderWorkspace({
 
     plugins.push(...marketplaceRuntimeExtensions)
     return plugins
-  }, [appendDebug, createModel, marketplaceRuntimeExtensions, ttsPlayer])
+  }, [appendDebug, createModel, language, marketplaceRuntimeExtensions, ttsPlayer])
 
   const createDemoReader = useCallback((cfg: DemoConfig) => {
     if (!viewerRef.current) return null
@@ -1233,6 +1381,7 @@ function ReaderWorkspace({
     await ensureReaderFontsLoaded(nextConfig)
     if (resetId !== readerResetIdRef.current) return
     const previous = readerRef.current
+    const previousLocation = previous?.getLocation?.()
     if (previous) previous.destroy()
     if (viewerRef.current) viewerRef.current.textContent = ''
 
@@ -1242,12 +1391,60 @@ function ReaderWorkspace({
     readerRef.current = nextReader
     wireReaderEvents(nextReader)
 
-    if (reopen) await openFileWithReader(reopen, nextReader, { preserveFile: true })
+    if (reopen) {
+      await openFileWithReader(reopen, nextReader, { preserveFile: true })
+      if (resetId !== readerResetIdRef.current) return
+      const totalFraction = Number(previousLocation?.totalFraction)
+      if (Number.isFinite(totalFraction)) {
+        await nextReader.goToFraction(Math.max(0, Math.min(1, totalFraction)))
+      }
+    }
   }, [createDemoReader, wireReaderEvents])
+
+  const toggleTranslationRuntime = async () => {
+    const current = configRef.current
+    if (!current.translate) return
+    const reader = readerRef.current
+    const runtime = reader?.getExtensionRuntime?.(TRANSLATION_EXTENSION_ID) as TranslationRuntime | undefined
+    if (!runtime) {
+      const message = t('reader.translationUnavailable')
+      setTranslationRuntimeError(message)
+      setStatus(message)
+      return
+    }
+    const shouldEnable = runtime.state !== 'running' && runtime.state !== 'preparing'
+    const next = {
+      ...current,
+      translationRuntimeEnabled: shouldEnable,
+    }
+    configRef.current = next
+    setConfig(next)
+    setDraftConfig(next)
+    saveReaderConfig(next)
+    if (shouldEnable) {
+      await runtime.start()
+      if (runtime.state === 'error') {
+        const failed = { ...next, translationRuntimeEnabled: false }
+        configRef.current = failed
+        setConfig(failed)
+        setDraftConfig(failed)
+        saveReaderConfig(failed)
+        const message = getTranslationRuntimeErrorMessage(runtime.snapshot.error, t)
+        setTranslationRuntimeError(message)
+        setStatus(message)
+      }
+    } else {
+      runtime.pause()
+    }
+    await reader.refresh?.()
+    refreshTOC(reader)
+  }
 
   useEffect(() => {
     void resetReader(config, null)
     return () => {
+      translationRuntimeUnsubscribeRef.current?.()
+      translationRuntimeUnsubscribeRef.current = null
       readerRef.current?.destroy?.()
       ttsPlayer.destroy?.()
     }
@@ -1271,7 +1468,7 @@ function ReaderWorkspace({
     }
 
     let cancelled = false
-    void buildChatReferenceOptions(reader, currentBook)
+    void buildChatReferenceOptions(reader, currentBook, t)
       .then(options => {
         if (!cancelled) setChatReferenceOptions(options)
       })
@@ -1283,21 +1480,22 @@ function ReaderWorkspace({
     return () => {
       cancelled = true
     }
-  }, [appendDebug, book, location])
+  }, [appendDebug, book, location, t])
 
   const openFileWithReader = async (file: File, targetReader = readerRef.current, options: { preserveFile?: boolean } = {}) => {
     if (!targetReader) return
     const previousFile = currentFileRef.current
     setBusy(true)
-    setStatus(`Opening ${file.name}...`)
+    setStatus(t('reader.openingFile', { name: file.name }))
     try {
       const started = performance.now()
       const openedBook = await targetReader.open(file)
       if (!options.preserveFile) currentFileRef.current = file
       bookRef.current = openedBook
       setBook(openedBook)
+      bindTranslationRuntime(targetReader)
       const parsedTitle = formatLanguageMap(openedBook.metadata?.title).trim()
-      const title = parsedTitle && parsedTitle !== file.name ? parsedTitle : titleFromBookFileName(file.name)
+      const title = parsedTitle && parsedTitle !== file.name ? parsedTitle : titleFromBookFileName(file.name, t('reader.untitledBook'))
       const author = formatBookContributors(openedBook.metadata?.author)
       let cover: Blob | null = null
       try {
@@ -1318,11 +1516,11 @@ function ReaderWorkspace({
       }
       setChatMessages([])
       setSearchResults([])
-      setSearchStatus('请输入搜索内容。')
+      setSearchStatus(t('reader.searchRequired'))
       refreshTOC(targetReader)
       await targetReader.goTo(0)
-      setStatus(`Opened ${file.name} in ${formatMs(performance.now() - started)}.`)
-      setTTSStatus(openedBook.tts ? 'TTS ready.' : 'TTS plugin disabled.')
+      setStatus(t('reader.openedFile', { name: file.name, duration: formatMs(performance.now() - started) }))
+      setTTSStatus(openedBook.tts ? t('reader.ttsReady') : t('reader.ttsDisabled'))
       appendDebug('book opened', {
         name: file.name,
         sections: openedBook.sections.length,
@@ -1333,11 +1531,11 @@ function ReaderWorkspace({
       })
     } catch (error) {
       const detail = error instanceof UnsupportedFormatError
-        ? 'Unsupported file format. Please open an EPUB, MOBI, FB2, CBZ, or PDF file.'
+        ? t('reader.unsupportedFormat')
         : error instanceof EBookError
           ? `Error (${error.code}): ${error.message}`
           : formatError(error)
-      setStatus(`Failed to open file: ${detail}`)
+      setStatus(t('reader.openFailed', { error: detail }))
       if (!options.preserveFile) currentFileRef.current = previousFile
       if (!bookRef.current) setBook(null)
       appendDebug('open failed', detail)
@@ -1353,13 +1551,13 @@ function ReaderWorkspace({
 
     void Promise.resolve().then(async () => {
       setBusy(true)
-      setStatus('正在从书架加载书籍…')
+      setStatus(t('reader.loadingFromShelf'))
       try {
         let item: ShelfItem
         let file: File
         if (isLocalBookId(libraryBookId)) {
           const localBook = await getLocalBook(libraryBookId)
-          if (!localBook) throw new Error('本地书籍不存在，可能已被浏览器清理')
+          if (!localBook) throw new Error(t('reader.localBookMissing'))
           item = localBook.item
           file = localBook.file
         } else {
@@ -1393,7 +1591,7 @@ function ReaderWorkspace({
         }
       } catch (error) {
         if (controller.signal.aborted) return
-        setStatus(`书架书籍加载失败：${formatError(error)}`)
+        setStatus(t('reader.loadFailed', { error: formatError(error) }))
       } finally {
         if (!cancelled) setBusy(false)
       }
@@ -1410,11 +1608,43 @@ function ReaderWorkspace({
     setTocItems(reader.getTOCViewItems({ location: currentLocation }))
   }
 
+  const bindTranslationRuntime = (reader: any) => {
+    translationRuntimeUnsubscribeRef.current?.()
+    translationRuntimeUnsubscribeRef.current = null
+    const runtime = reader?.getExtensionRuntime?.(TRANSLATION_EXTENSION_ID) as TranslationRuntime | undefined
+    if (!runtime) {
+      setTranslationRuntimeState(configRef.current.translationRuntimeEnabled ? 'idle' : 'paused')
+      setTranslationRuntimeError('')
+      return
+    }
+    let previousState = runtime.state
+    translationRuntimeUnsubscribeRef.current = runtime.subscribe(snapshot => {
+      setTranslationRuntimeState(snapshot.state)
+      if (snapshot.state === 'error') {
+        const message = getTranslationRuntimeErrorMessage(snapshot.error, t)
+        setTranslationRuntimeError(message)
+        setStatus(message)
+        appendDebug('translation runtime error', snapshot.error)
+      } else {
+        setTranslationRuntimeError('')
+      }
+      if (
+        (snapshot.state === 'running' && previousState !== 'running')
+        || (snapshot.state === 'paused' && previousState !== 'paused' && previousState !== 'idle')
+      ) {
+        void reader.refresh?.().then(() => refreshTOC(reader)).catch((error: unknown) => {
+          appendDebug('translation runtime refresh failed', formatError(error))
+        })
+      }
+      previousState = snapshot.state
+    })
+  }
+
   const applyConfig = async () => {
     const next = { ...draftConfig, chatPanelWidth: String(chatPanelWidth) }
     setConfig(next)
     configRef.current = next
-    saveConfig(next)
+    saveReaderConfig(next)
     setSettingsOpen(false)
     await resetReader(next)
   }
@@ -1428,21 +1658,24 @@ function ReaderWorkspace({
   }
 
   const uploadCurrentBookForStoryMemory = async (uploadConfig: DemoConfig) => {
+    if (!STORY_MEMORY_ENABLED) {
+      throw new Error('Story Memory is only available in development builds.')
+    }
     const file = currentFileRef.current
     if (!file) {
-      const message = 'Open a local book file before uploading it to rebook-service.'
+      const message = t('reader.storyOpenBookFirst')
       setStoryUploadStatus(message)
       throw new Error(message)
     }
     const serviceBaseUrl = uploadConfig.professionalServiceBaseUrl.trim()
     if (!serviceBaseUrl) {
-      const message = 'Fill Story service URL before uploading.'
+      const message = t('reader.storyServiceRequired')
       setStoryUploadStatus(message)
       throw new Error(message)
     }
 
     setStoryUploadBusy(true)
-    setStoryUploadStatus(`Uploading ${file.name}...`)
+    setStoryUploadStatus(t('reader.storyUploading', { name: file.name }))
     try {
       const form = new FormData()
       form.append('file', file, file.name)
@@ -1461,16 +1694,16 @@ function ReaderWorkspace({
         throw new Error(storyMemoryErrorText(data, text) || `HTTP ${response.status}`)
       }
       if (!isRecord(data) || typeof data.id !== 'string') {
-        throw new Error('Upload succeeded but response did not include a book id.')
+        throw new Error(t('reader.storyMissingBookId'))
       }
-      setStoryUploadStatus(`Uploaded. Book ID: ${data.id}. Apply settings to enable story tools.`)
+      setStoryUploadStatus(t('reader.storyUploaded', { id: data.id }))
       appendDebug('story memory upload', { bookId: data.id, title: data.title })
       return {
         bookId: data.id,
         title: typeof data.title === 'string' ? data.title : undefined,
       }
     } catch (error) {
-      const message = `Upload failed: ${formatError(error)}`
+      const message = t('reader.storyUploadFailed', { error: formatError(error) })
       setStoryUploadStatus(message)
       appendDebug('story memory upload failed', message)
       throw error
@@ -1482,15 +1715,15 @@ function ReaderWorkspace({
   const runSearch = async (rawQuery = searchQuery) => {
     const reader = readerRef.current
     if (!reader || !bookRef.current) {
-      setSearchStatus('书籍加载后即可搜索。')
+      setSearchStatus(t('reader.searchUnavailable'))
       return
     }
     const query = rawQuery.trim()
     if (!query) {
-      setSearchStatus('请输入搜索内容。')
+      setSearchStatus(t('reader.searchRequired'))
       return
     }
-    setSearchStatus('正在搜索…')
+    setSearchStatus(t('reader.searching'))
     reader.clearMarks?.('search')
     const results = await reader.search(query, {
       scope: searchScope === 'unit' ? 'unit' : 'book',
@@ -1499,13 +1732,13 @@ function ReaderWorkspace({
       contextChars: 96,
     })
     setSearchResults(results)
-    setSearchStatus(results.length ? `找到 ${results.length} 个结果` : '没有找到匹配内容。')
+    setSearchStatus(results.length ? t('reader.searchResults', { count: results.length }) : t('reader.noSearchResultsPunctuation'))
   }
 
   const goToSearchResult = async (item: SearchItem) => {
     const reader = readerRef.current
     if (!reader?.canGoTo?.(item.unitIndex)) {
-      setStatus('Trial limit reached.')
+      setStatus(t('reader.trialLimit'))
       return
     }
     const target = item.blockId ? `${item.unitIndex}#${item.blockId}` : item.unitIndex
@@ -1526,8 +1759,8 @@ function ReaderWorkspace({
 
   const sendChatMessage = async () => {
     const rawContent = chatInput.trim()
-    const commandResult = resolveChatCommand(rawContent)
-    const content = buildChatMessageContentWithReferences(commandResult?.prompt ?? rawContent, chatReferences)
+    const commandResult = resolveChatCommand(rawContent, language)
+    const content = buildChatMessageContentWithReferences(commandResult?.prompt ?? rawContent, chatReferences, t, language)
     const attachments = chatAttachments
     const references = chatReferences
     const aiChat = bookRef.current?.aiChat
@@ -1545,7 +1778,7 @@ function ReaderWorkspace({
     if (!aiChat) {
       setChatMessages(messages => [...messages, {
         role: 'assistant',
-        content: config.chat ? '请先在设置中填写 AI Chat API Key 并重新应用配置。' : '请先在设置中启用 AI Chat。',
+        content: config.chat ? t('reader.aiKeyRequired') : t('reader.aiDisabled'),
       }])
       return
     }
@@ -1554,7 +1787,7 @@ function ReaderWorkspace({
       ...chatMessages.filter(message => !message.pending),
       {
         role: 'user',
-        content: content || '请分析这些图片。',
+        content: content || t('reader.analyzeImages'),
         displayContent: commandResult || references.length ? rawContent : undefined,
         attachments,
         references,
@@ -1568,7 +1801,7 @@ function ReaderWorkspace({
     try {
       const current = getCurrentChatContext(readerRef.current, bookRef.current)
       const askOptions = {
-        messages: nextMessages.map(toAIChatMessage),
+        messages: nextMessages.map(message => toAIChatMessage(message, t)),
         currentUnitIndex: current.unitIndex,
         current,
       }
@@ -1634,7 +1867,7 @@ function ReaderWorkspace({
     const citation = parseRebookJumpHref(href)
     if (!citation || !readerRef.current) return
     if (!readerRef.current.canGoTo?.(citation.unitIndex)) {
-      setStatus('Trial limit reached.')
+      setStatus(t('reader.trialLimit'))
       return
     }
     const section = bookRef.current?.sections[citation.unitIndex]
@@ -1656,7 +1889,7 @@ function ReaderWorkspace({
   const playTTS = async () => {
     const currentBook = bookRef.current
     if (!currentBook?.tts || !readerRef.current) {
-      setTTSStatus('Enable TTS and apply settings first.')
+      setTTSStatus(t('reader.enableTtsFirst'))
       return
     }
     stopTTS()
@@ -1676,7 +1909,7 @@ function ReaderWorkspace({
       }
       if (cfg.ttsMultiSpeaker) {
         const model = createModel(cfg.ttsAIAPIKey, cfg.ttsAIBaseURL, cfg.ttsModel)
-        if (!model) throw new Error('Multi voice TTS needs TTS AI API key.')
+        if (!model) throw new Error(t('reader.multiVoiceKeyRequired'))
         prefetchOptions.model = model
         prefetchOptions.multiSpeaker = true
         prefetchOptions.speakerAnalysis = { onLog: (event: unknown) => appendDebug('tts llm', event) }
@@ -1686,17 +1919,17 @@ function ReaderWorkspace({
       await currentBook.tts.playPrefetchedSection(prefetch, {
         signal: abortController.signal,
         preloadAhead: 3,
-        onSegmentQueued: ({ index, total }: any) => setTTSStatus(`Queued ${index + 1}/${total}`),
+        onSegmentQueued: ({ index, total }: any) => setTTSStatus(t('reader.ttsQueued', { current: index + 1, total })),
         onSegmentStart: ({ index, total, segment }: any) => {
-          setTTSStatus(`Playing ${index + 1}/${total}`)
+          setTTSStatus(t('reader.ttsPlaying', { current: index + 1, total }))
           markTTSSegment(sectionIndex, segment)
         },
         onSegmentEnd: () => readerRef.current?.clearMarks?.('tts'),
         onSegmentError: ({ error }: any) => appendDebug('tts segment skipped', formatError(error)),
       })
-      setTTSStatus('TTS finished.')
+      setTTSStatus(t('reader.ttsFinished'))
     } catch (error) {
-      if (!abortController.signal.aborted) setTTSStatus(`TTS failed: ${formatError(error)}`)
+      if (!abortController.signal.aborted) setTTSStatus(t('reader.ttsFailed', { error: formatError(error) }))
     } finally {
       if (ttsAbortRef.current === abortController) ttsAbortRef.current = null
       readerRef.current?.clearMarks?.('tts')
@@ -1709,7 +1942,7 @@ function ReaderWorkspace({
     bookRef.current?.tts?.stopPlayback?.()
     ttsPlayer.stop()
     readerRef.current?.clearMarks?.('tts')
-    setTTSStatus(bookRef.current?.tts ? 'TTS stopped.' : 'TTS plugin disabled.')
+    setTTSStatus(bookRef.current?.tts ? t('reader.ttsStopped') : t('reader.ttsDisabled'))
   }
 
   const markTTSSegment = (sectionIndex: number, segment: any) => {
@@ -1736,14 +1969,14 @@ function ReaderWorkspace({
             <button
               type="button"
               className={`absolute inset-0 z-60 bg-overlay transition-opacity ${sidebarPinned ? 'lg:hidden' : ''}`}
-              aria-label="关闭侧边栏"
+              aria-label={t('reader.closeSidebar')}
               onClick={() => setSidebarOpen(false)}
             />
             <ReaderSidebar
               items={tocItems}
               view={sidebarView}
               pinned={sidebarPinned}
-              bookTitle={bookTitle || libraryItem?.title || '正在加载…'}
+              bookTitle={bookTitle || libraryItem?.title || t('reader.loading')}
               bookAuthor={bookAuthor || libraryItem?.author || ''}
               bookFormat={libraryItem?.sourceType || ''}
               coverUrl={bookCoverUrl || (libraryItem?.coverUrl ? assetUrl(libraryItem.coverUrl) : null)}
@@ -1756,13 +1989,13 @@ function ReaderWorkspace({
               searchResults={searchResults}
               onSetView={setSidebarView}
               onClose={() => setSidebarOpen(false)}
-              onTogglePinned={() => setSidebarPinned(value => !value)}
+              onTogglePinned={toggleSidebarPinned}
               onRunSearch={query => void runSearch(query)}
               onClearSearch={() => {
                 readerRef.current?.clearMarks?.('search')
                 setSearchQuery('')
                 setSearchResults([])
-                setSearchStatus(bookRef.current ? '请输入搜索内容。' : '书籍加载后即可搜索。')
+                setSearchStatus(bookRef.current ? t('reader.searchRequired') : t('reader.searchUnavailable'))
               }}
               onSearchNavigate={item => {
                 void goToSearchResult(item)
@@ -1782,6 +2015,9 @@ function ReaderWorkspace({
             bookTitle={bookTitle}
             sidebarOpen={sidebarOpen}
             activePanel={activePanel}
+            translationAvailable={config.translate && !config.professionalTranslation}
+            translationActive={translationRuntimeState === 'running' || translationRuntimeState === 'preparing'}
+            translationError={translationRuntimeError}
             chatEnabled={config.chat}
             authenticated={authenticated}
             accountLabel={accountLabel}
@@ -1789,9 +2025,10 @@ function ReaderWorkspace({
             onLogin={onLogin}
             onLogout={onLogout}
             onToggleSidebar={() => setSidebarOpen(value => !value)}
+            onToggleTranslation={() => void toggleTranslationRuntime()}
             onOpenSettings={() => {
               setDraftConfig(config)
-              setSettingsSection('font')
+              setSettingsSection('general')
               setSettingsOpen(true)
             }}
             onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
@@ -1815,7 +2052,7 @@ function ReaderWorkspace({
             <button
               type="button"
               className="absolute inset-0 z-60 bg-overlay lg:hidden"
-              aria-label="Close panel"
+              aria-label={t('reader.closePanel')}
               onClick={() => setActivePanel(null)}
             />
             <RightPanel
@@ -1838,7 +2075,7 @@ function ReaderWorkspace({
                 const next = { ...configRef.current, chatPanelWidth: String(width) }
                 configRef.current = next
                 setConfig(next)
-                saveConfig(next)
+                saveReaderConfig(next)
               }}
               onClose={() => setActivePanel(null)}
             >
@@ -1870,16 +2107,16 @@ function ReaderWorkspace({
       />
 
       {settingsOpen && (
-        <SettingsDialog
+        <ReaderSettingsDialog
           section={settingsSection}
           setSection={setSettingsSection}
           config={draftConfig}
           setConfig={setDraftConfig}
           extensionRuntimeStatus={extensionRuntimeStatus}
           currentBookFileName={currentFileRef.current?.name}
-          storyUploadBusy={storyUploadBusy}
-          storyUploadStatus={storyUploadStatus}
-          onUploadCurrentBook={uploadCurrentBookForStoryMemory}
+          storyUploadBusy={STORY_MEMORY_ENABLED ? storyUploadBusy : undefined}
+          storyUploadStatus={STORY_MEMORY_ENABLED ? storyUploadStatus : undefined}
+          onUploadCurrentBook={STORY_MEMORY_ENABLED ? uploadCurrentBookForStoryMemory : undefined}
           onClose={closeSettings}
           onApply={() => void applyConfig()}
         />
@@ -1893,6 +2130,9 @@ function Header(props: {
   bookTitle: string
   sidebarOpen: boolean
   activePanel: Panel
+  translationAvailable: boolean
+  translationActive: boolean
+  translationError: string
   chatEnabled: boolean
   authenticated: boolean
   accountLabel: string
@@ -1900,9 +2140,11 @@ function Header(props: {
   onLogin?: () => void
   onLogout?: () => void
   onToggleSidebar(): void
+  onToggleTranslation(): void
   onOpenSettings(): void
   onTogglePanel(panel: Panel): void
 }) {
+  const { t } = useI18n()
   const menuRef = useRef<HTMLDivElement | null>(null)
   const hideTimerRef = useRef<number | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -1958,7 +2200,7 @@ function Header(props: {
         onPointerEnter={reveal}
       />
       <header
-        className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible border-b border-line bg-surface/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
+        className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible bg-surface/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
           visible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'
         }`}
         onPointerEnter={reveal}
@@ -1967,24 +2209,38 @@ function Header(props: {
         onBlur={scheduleHide}
       >
       <div className="flex min-w-0 items-center gap-1.5">
-        <button
-          className={iconButtonClass}
-          type="button"
-          onClick={props.onToggleSidebar}
-          title={props.sidebarOpen ? '收起侧边栏' : '打开侧边栏'}
-        >
-          <PanelLeft className="h-4 w-4" />
-        </button>
+        {!props.sidebarOpen ? (
+          <button
+            className={iconButtonClass}
+            type="button"
+            onClick={props.onToggleSidebar}
+            title={t('reader.openSidebar')}
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+        ) : null}
+        {props.translationAvailable ? (
+          <button
+            className={sidebarToolButtonClass(props.translationActive)}
+            type="button"
+            onClick={props.onToggleTranslation}
+            title={props.translationError || (props.translationActive ? t('reader.pauseTranslation') : t('reader.startTranslation'))}
+            aria-pressed={props.translationActive}
+            disabled={props.busy}
+          >
+            <Languages className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
       <div className="min-w-0 text-center">
         <div className="flex items-center justify-center gap-2 truncate text-ui-md font-semibold text-ink">
           {props.busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : null}
-          <span className="truncate">{props.bookTitle || (props.busy ? '正在加载…' : '阅读器')}</span>
+          <span className="truncate">{props.bookTitle || (props.busy ? t('reader.loading') : t('reader.reader'))}</span>
         </div>
       </div>
       <div className="flex items-center justify-end gap-1">
         {props.chatEnabled ? (
-          <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title="Chat">
+          <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title={t('reader.chat')}>
             <MessageSquareText className="h-4 w-4" />
           </button>
         ) : null}
@@ -1992,8 +2248,8 @@ function Header(props: {
           <button
             className={panelButtonClass(menuOpen)}
             type="button"
-            title="Menu"
-            aria-label="打开菜单"
+            title={t('reader.menu')}
+            aria-label={t('shelf.openMenu')}
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen(open => !open)}
           >
@@ -2010,7 +2266,7 @@ function Header(props: {
               {props.onExit ? (
                 <ReaderMenuAction
                   icon={<ArrowLeft className="h-4 w-4" />}
-                  label="返回书架"
+                  label={t('common.backToShelf')}
                   onClick={() => {
                     setMenuOpen(false)
                     props.onExit?.()
@@ -2019,7 +2275,7 @@ function Header(props: {
               ) : null}
               <ReaderMenuAction
                 icon={<Settings className="h-4 w-4" />}
-                label="设置"
+                label={t('common.settings')}
                 onClick={() => {
                   setMenuOpen(false)
                   props.onOpenSettings()
@@ -2028,7 +2284,7 @@ function Header(props: {
               {!props.authenticated && props.onLogin ? (
                 <ReaderMenuAction
                   icon={<LogIn className="h-4 w-4" />}
-                  label="登录"
+                  label={t('common.signIn')}
                   onClick={() => {
                     setMenuOpen(false)
                     props.onLogin?.()
@@ -2038,7 +2294,7 @@ function Header(props: {
               {props.authenticated && props.onLogout ? (
                 <ReaderMenuAction
                   icon={<LogOut className="h-4 w-4" />}
-                  label="退出登录"
+                  label={t('common.signOut')}
                   onClick={() => {
                     setMenuOpen(false)
                     props.onLogout?.()
@@ -2049,7 +2305,7 @@ function Header(props: {
           ) : null}
         </div>
         {props.onExit ? (
-          <button className={iconButtonClass} type="button" onClick={props.onExit} title="返回书架">
+          <button className={iconButtonClass} type="button" onClick={props.onExit} title={t('common.backToShelf')}>
             <X className="h-4 w-4" />
           </button>
         ) : null}
@@ -2068,6 +2324,7 @@ function ReaderMenuAction({
   label: string
   onClick(): void
 }) {
+  const { t } = useI18n()
   return (
     <button
       className={menuRowClass}
@@ -2125,6 +2382,7 @@ function ReaderSidebar({
   onSearchNavigate(item: SearchItem): void
   onNavigate(target: string): void
 }) {
+  const { t } = useI18n()
   const activePath = useMemo(() => findActiveTOCPath(items), [items])
   const activePathKey = activePath.join('\u0000')
   const activeBranchIds = useMemo(() => new Set(activePath), [activePathKey])
@@ -2167,8 +2425,8 @@ function ReaderSidebar({
     <aside className={`absolute inset-y-0 left-0 z-70 flex w-60 shrink-0 flex-col overflow-hidden border-r border-line bg-surface/92 shadow-dialog backdrop-blur-xl ${
       pinned ? 'lg:relative lg:z-auto lg:shadow-none' : 'lg:absolute lg:z-70'
     }`}>
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line px-3">
-        <button className={iconButtonClass} type="button" onClick={onClose} title="收起侧边栏">
+      <div className="flex h-11 shrink-0 items-center gap-1 px-3">
+        <button className={iconButtonClass} type="button" onClick={onClose} title={t('reader.closeSidebar')}>
           <PanelLeft className="h-4 w-4" />
         </button>
         <div className="flex-1" />
@@ -2176,7 +2434,7 @@ function ReaderSidebar({
           className={sidebarToolButtonClass(view === 'search')}
           type="button"
           onClick={() => onSetView('search')}
-          title="搜索"
+          title={t('common.search')}
           aria-pressed={view === 'search'}
         >
           <Search className="h-4 w-4" />
@@ -2185,7 +2443,7 @@ function ReaderSidebar({
           className={sidebarToolButtonClass(view === 'toc')}
           type="button"
           onClick={() => onSetView('toc')}
-          title="目录"
+          title={t('reader.toc')}
           aria-pressed={view === 'toc'}
         >
           <ListTree className="h-4 w-4" />
@@ -2194,7 +2452,7 @@ function ReaderSidebar({
           className={`${sidebarToolButtonClass(pinned)} hidden lg:inline-flex`}
           type="button"
           onClick={onTogglePinned}
-          title={pinned ? '取消固定侧边栏' : '固定侧边栏'}
+          title={pinned ? t('reader.unpinSidebar') : t('reader.pinSidebar')}
           aria-pressed={pinned}
         >
           {pinned ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
@@ -2236,7 +2494,7 @@ function ReaderSidebar({
                 onToggle={toggleItem}
               />
             ) : (
-              <p className="px-4 py-5 text-ui-md text-muted">书籍加载后将在这里显示目录。</p>
+              <p className="px-4 py-5 text-ui-md text-muted">{t('reader.tocEmpty')}</p>
             )}
           </div>
         </>
@@ -2256,6 +2514,7 @@ function SidebarBookSummary({
   format: string
   coverUrl: string | null
 }) {
+  const { t } = useI18n()
   return (
     <div className="flex min-h-28 shrink-0 items-center gap-3 px-4 py-4">
       <div className="grid h-[4.5rem] w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-accent-soft text-accent-text shadow-menu">
@@ -2267,7 +2526,7 @@ function SidebarBookSummary({
       </div>
       <div className="min-w-0 flex-1">
         <div className="line-clamp-2 text-ui-lg font-semibold text-ink">{title}</div>
-        <div className="mt-1 truncate text-ui-md text-muted">{author || format.toUpperCase() || '电子书'}</div>
+        <div className="mt-1 truncate text-ui-md text-muted">{author || format.toUpperCase() || t('reader.ebook')}</div>
       </div>
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted" title={`${title}${author ? ` · ${author}` : ''}`}>
         <Info className="h-4 w-4" />
@@ -2293,6 +2552,7 @@ function TOCTree({
   activeBranchIds: ReadonlySet<string>
   onToggle(id: string): void
 }) {
+  const { t } = useI18n()
   return (
     <ul className={depth === 0 ? 'py-2' : ''}>
       {items.map((item, index) => {
@@ -2324,7 +2584,7 @@ function TOCTree({
                   className="grid h-8 w-6 shrink-0 place-items-center text-muted transition-colors duration-150 hover:text-ink"
                   onClick={() => onToggle(itemId)}
                   aria-expanded={expanded}
-                  title={expanded ? 'Collapse section' : 'Expand section'}
+                  title={expanded ? t('reader.collapseSection') : t('reader.expandSection')}
                 >
                   {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                 </button>
@@ -2339,9 +2599,9 @@ function TOCTree({
                   'min-w-0 flex-1 truncate py-2 text-left transition-colors duration-150',
                   disabled ? 'cursor-not-allowed' : '',
                 ].join(' ')}
-                title={getDemoTOCItemLabel(item)}
+                title={getDemoTOCItemLabel(item, t('reader.untitled'))}
               >
-                {getDemoTOCItemLabel(item)}
+                {getDemoTOCItemLabel(item, t('reader.untitled'))}
               </button>
             </div>
             {hasChildren && expanded ? (
@@ -2405,8 +2665,8 @@ function getDemoTOCItemTarget(item: DemoTOCItem): string {
   return ''
 }
 
-function getDemoTOCItemLabel(item: DemoTOCItem): string {
-  return item.label || 'Untitled'
+function getDemoTOCItemLabel(item: DemoTOCItem, fallback = 'Untitled'): string {
+  return item.label || fallback
 }
 
 function isDemoTOCItemActive(item: DemoTOCItem): boolean {
@@ -2425,6 +2685,7 @@ function RightPanel(props: {
   onClearChat?: () => void
   children: React.ReactNode
 }) {
+  const { t } = useI18n()
   const dragRef = useRef<{ right: number } | null>(null)
   return (
     <aside
@@ -2449,14 +2710,14 @@ function RightPanel(props: {
       )}
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex h-11 shrink-0 items-center justify-between border-b border-line px-3">
-          <span className="text-ui-md font-semibold capitalize text-ink">{props.panel}</span>
+          <span className="text-ui-md font-semibold text-ink">{props.panel === 'chat' ? t('reader.chat') : props.panel}</span>
           <div className="flex items-center gap-1">
             {props.panel === 'chat' && props.onClearChat ? (
-              <button className={iconButtonClass} type="button" onClick={props.onClearChat} title="Clear chat">
+              <button className={iconButtonClass} type="button" onClick={props.onClearChat} title={t('reader.clearChat')}>
                 <Trash2 className="h-4 w-4" />
               </button>
             ) : null}
-            <button className={iconButtonClass} type="button" onClick={props.onClose} title="Close">
+            <button className={iconButtonClass} type="button" onClick={props.onClose} title={t('common.close')}>
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -2480,6 +2741,7 @@ function SearchPanel(props: {
   onClear(): void
   onNavigate(item: SearchItem): void
 }) {
+  const { t } = useI18n()
   const scopeMenuRef = useRef<HTMLDivElement | null>(null)
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false)
   const groupedResults = useMemo(() => {
@@ -2534,7 +2796,7 @@ function SearchPanel(props: {
               ref={props.inputRef}
               className="h-11 min-w-0 flex-1 bg-transparent text-ui-md text-ink outline-none placeholder:text-muted"
               value={props.query}
-              placeholder="搜索…"
+              placeholder={t('reader.searchPlaceholder')}
               onChange={event => props.setQuery(event.target.value)}
               onKeyDown={event => {
                 if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
@@ -2543,7 +2805,7 @@ function SearchPanel(props: {
               }}
             />
             {props.query ? (
-              <button className={roundIconButtonClass} type="button" onClick={props.onClear} title="清除搜索">
+              <button className={roundIconButtonClass} type="button" onClick={props.onClear} title={t('common.clearSearch')}>
                 <X className="h-4 w-4" />
               </button>
             ) : null}
@@ -2552,8 +2814,8 @@ function SearchPanel(props: {
             <button
               className={`grid h-11 w-11 place-items-center rounded-r-xl text-muted-strong transition-colors duration-150 hover:bg-surface-muted ${scopeMenuOpen ? 'bg-surface-muted text-ink' : ''}`}
               type="button"
-              title="搜索范围"
-              aria-label="搜索范围"
+              title={t('reader.searchScope')}
+              aria-label={t('reader.searchScope')}
               aria-expanded={scopeMenuOpen}
               onClick={() => setScopeMenuOpen(open => !open)}
             >
@@ -2562,8 +2824,8 @@ function SearchPanel(props: {
             {scopeMenuOpen ? (
               <div className="absolute right-0 top-[calc(100%+0.5rem)] z-80 w-44 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none">
                 {([
-                  ['book', '全书'],
-                  ['unit', '当前章节'],
+                  ['book', t('reader.wholeBook')],
+                  ['unit', t('reader.currentChapter')],
                 ] as const).map(([value, label]) => (
                   <button
                     key={value}
@@ -2605,12 +2867,12 @@ function SearchPanel(props: {
               ))}
             </div>
           </section>
-        )) : props.status === '正在搜索…' ? (
+        )) : props.status === t('reader.searching') ? (
           <div className="grid min-h-28 place-items-center text-muted">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : props.status === '没有找到匹配内容。' ? (
-          <div className="px-3 py-10 text-center text-ui-md text-muted">没有找到匹配内容</div>
+        ) : props.status === t('reader.noSearchResultsPunctuation') ? (
+          <div className="px-3 py-10 text-center text-ui-md text-muted">{t('reader.noSearchResults')}</div>
         ) : null}
       </div>
     </div>
@@ -2644,6 +2906,7 @@ function ChatPanel(props: {
   onSend(): void
   onCitation(href: string): void
 }) {
+  const { language, t } = useI18n()
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [cursorIndex, setCursorIndex] = useState(props.input.length)
@@ -2656,8 +2919,8 @@ function ChatPanel(props: {
     [props.referenceOptions, props.references, referenceToken],
   )
   const commandSuggestions = useMemo(
-    () => referenceToken ? [] : getChatCommandSuggestions(props.input),
-    [props.input, referenceToken],
+    () => referenceToken ? [] : getChatCommandSuggestions(props.input, language),
+    [language, props.input, referenceToken],
   )
   const activeSuggestionCount = referenceSuggestions.length || commandSuggestions.length
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
@@ -2727,7 +2990,7 @@ function ChatPanel(props: {
             ) : (
               <p className="whitespace-pre-wrap">
                 {message.role === 'assistant' && message.pending && !message.content
-                  ? 'Thinking...'
+                  ? t('reader.thinking')
                   : message.displayContent ?? message.content}
               </p>
             )}
@@ -2737,7 +3000,7 @@ function ChatPanel(props: {
           </div>
         )) : (
           <div className="rounded-lg border border-dashed border-line p-4 text-ui-md text-muted">
-            Ask for a chapter summary, explain a passage, or search for a concept.
+            {t('reader.chatEmpty')}
           </div>
         )}
       </div>
@@ -2770,7 +3033,7 @@ function ChatPanel(props: {
                   }}
                 >
                   <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-ui-xs font-semibold text-accent-text">
-                    {reference.kind === 'section' ? '章节' : '段落'}
+                    {reference.kind === 'section' ? t('reader.chapter') : t('reader.paragraph')}
                   </span>
                   <span className="max-w-[45%] shrink-0 truncate font-mono text-ui-md font-semibold text-ink">{reference.label}</span>
                   <span className="min-w-0 truncate">{reference.description}</span>
@@ -2810,7 +3073,7 @@ function ChatPanel(props: {
                     type="button"
                     className="absolute right-1 top-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-ink/80 text-surface"
                     onClick={() => props.onRemoveAttachment(attachment.id)}
-                    title="Remove image"
+                    title={t('reader.removeImage')}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -2820,10 +3083,10 @@ function ChatPanel(props: {
           ) : null}
           <div className="flex items-end gap-1.5">
             <button
-              className={roundIconButtonClass}
+              className={`${roundIconButtonClass} !h-9 !w-9`}
               type="button"
               onClick={() => imageInputRef.current?.click()}
-              title="Attach image"
+              title={t('reader.attachImage')}
             >
               <Plus className="h-5 w-5" />
             </button>
@@ -2832,7 +3095,7 @@ function ChatPanel(props: {
               className="max-h-36 min-h-9 min-w-0 flex-1 resize-none border-0 bg-transparent px-1 py-2 text-ui-md text-ink outline-none placeholder:text-muted"
               value={props.input}
               rows={1}
-              placeholder="Ask about this book"
+              placeholder={t('reader.askBook')}
               onChange={event => {
                 props.setInput(event.target.value)
                 setCursorIndex(event.currentTarget.selectionStart ?? event.currentTarget.value.length)
@@ -2886,7 +3149,7 @@ function ChatPanel(props: {
               type="button"
               disabled={props.busy || (!props.input.trim() && !props.attachments.length && !props.references.length)}
               onClick={props.onSend}
-              title="Send"
+              title={t('reader.send')}
             >
               {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
             </button>
@@ -2898,6 +3161,7 @@ function ChatPanel(props: {
 }
 
 function ChatReferenceChips({ references, onRemove }: { references: ChatReference[]; onRemove?(id: string): void }) {
+  const { t } = useI18n()
   return (
     <div className="flex flex-wrap gap-1.5 px-0.5 pb-1.5 pt-0.5">
       {references.map(reference => (
@@ -2906,14 +3170,14 @@ function ChatReferenceChips({ references, onRemove }: { references: ChatReferenc
           className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-accent-softer bg-accent-soft px-1.5 py-1 text-ui-sm text-accent-text"
           title={reference.excerpt || reference.description}
         >
-          <span className="shrink-0 font-semibold text-accent">{reference.kind === 'section' ? '章节' : '段落'}</span>
+          <span className="shrink-0 font-semibold text-accent">{reference.kind === 'section' ? t('reader.chapter') : t('reader.paragraph')}</span>
           <span className="min-w-0 truncate">{reference.label}</span>
           {onRemove ? (
             <button
               type="button"
               className="inline-flex shrink-0 items-center justify-center text-muted hover:text-accent-text"
               onClick={() => onRemove(reference.id)}
-              title="Remove reference"
+              title={t('reader.removeReference')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -2930,8 +3194,9 @@ function ChatMarkdownLink({
   onCitation,
   ...props
 }: AnchorHTMLAttributes<HTMLAnchorElement> & { onCitation(href: string): void }) {
+  const { t } = useI18n()
   if (href && isRebookJumpHref(href)) {
-    const label = flattenReactText(children) || 'Open citation'
+    const label = flattenReactText(children) || t('reader.openCitation')
     return <ChatCitationLink {...props} href={href} label={label} onCitation={onCitation} />
   }
   return (
@@ -2988,6 +3253,7 @@ function ChatMarkdownContent({
   streaming: boolean
   onCitation(href: string): void
 }) {
+  const { t } = useI18n()
   const parts = useMemo(() => splitRenderableMarkdownPreviews(content), [content])
   return (
     <div className="chat-markdown">
@@ -3002,7 +3268,7 @@ function ChatMarkdownContent({
             />
           )
         }
-        const citationDraft = extractStreamingCitationDraft(part.markdown, streaming)
+        const citationDraft = extractStreamingCitationDraft(part.markdown, streaming, t('reader.source'))
         const markdown = citationDraft?.markdown ?? part.markdown
         return (
           <Fragment key={part.key}>
@@ -3087,7 +3353,7 @@ function appendMarkdownPart(parts: ChatMarkdownPart[], markdown: string, key: st
   parts.push({ type: 'markdown', key, markdown })
 }
 
-function extractStreamingCitationDraft(markdown: string, streaming: boolean): { markdown: string; href: string; label: string } | null {
+function extractStreamingCitationDraft(markdown: string, streaming: boolean, fallbackLabel: string): { markdown: string; href: string; label: string } | null {
   if (!streaming) return null
   const match = /\[([^\]\n]{0,80})\]\((rebook:\/\/j\/[^)\s]*)$/.exec(markdown)
   if (!match) return null
@@ -3096,7 +3362,7 @@ function extractStreamingCitationDraft(markdown: string, streaming: boolean): { 
   return {
     markdown: markdown.slice(0, match.index),
     href,
-    label: match[1] || '出处',
+    label: match[1] || fallbackLabel,
   }
 }
 
@@ -3115,6 +3381,7 @@ function ChatCodePreview({
   preProps: HTMLAttributes<HTMLPreElement>
   streaming: boolean
 }) {
+  const { t } = useI18n()
   const [tab, setTab] = useState<'preview' | 'code'>('preview')
   const [collapsed, setCollapsed] = useState(false)
   const [frameHeight, setFrameHeight] = useState(360)
@@ -3293,7 +3560,7 @@ function ChatCodePreview({
               type="button"
               className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-strong transition-colors duration-150 hover:bg-track hover:text-ink"
               onClick={() => setCollapsed(value => !value)}
-              title={collapsed ? 'Expand preview height' : 'Collapse preview height'}
+              title={collapsed ? t('reader.expandPreview') : t('reader.collapsePreview')}
             >
               {collapsed ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
             </button>
@@ -3307,7 +3574,7 @@ function ChatCodePreview({
               ].join(' ')}
               onClick={() => setTab('preview')}
             >
-              Preview
+              {t('reader.preview')}
             </button>
             <button
               type="button"
@@ -3317,7 +3584,7 @@ function ChatCodePreview({
               ].join(' ')}
               onClick={() => setTab('code')}
             >
-              Code
+              {t('reader.code')}
             </button>
           </div>
         </div>
@@ -3329,7 +3596,7 @@ function ChatCodePreview({
           sandbox="allow-same-origin"
           srcDoc={PREVIEW_SHELL_DOCUMENT}
           style={{ height: effectiveFrameHeight }}
-          title={`${preview.label} preview`}
+          title={`${preview.label} ${t('reader.preview')}`}
           onLoad={() => {
             writePreviewFrameContent(frameRef.current, framePreview)
             scheduleFrameMeasure(streaming ? 'grow' : 'fit')
@@ -3541,32 +3808,34 @@ function flattenReactText(value: unknown): string {
   return ''
 }
 
-function SettingsDialog(props: {
+export function ReaderSettingsDialog(props: {
   section: SettingsSection
   setSection(section: SettingsSection): void
   config: DemoConfig
   setConfig(config: DemoConfig): void
-  extensionRuntimeStatus: DemoExtensionRuntimeStatus
+  extensionRuntimeStatus?: DemoExtensionRuntimeStatus
   currentBookFileName?: string
-  storyUploadBusy: boolean
-  storyUploadStatus: string
-  onUploadCurrentBook(config: DemoConfig): Promise<{ bookId: string; title?: string }>
+  storyUploadBusy?: boolean
+  storyUploadStatus?: string
+  onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
   onClose(): void
   onApply(): void
 }) {
+  const { t } = useI18n()
   const sections: Array<{ id: SettingsSection; label: string }> = [
-    { id: 'font', label: '字体' },
-    { id: 'reading', label: '阅读' },
+    { id: 'general', label: t('settings.general') },
+    { id: 'font', label: t('settings.font') },
+    { id: 'reading', label: t('settings.reading') },
   ]
-  if (props.config.translate) sections.push({ id: 'translation', label: '翻译' })
-  if (props.config.tts) sections.push({ id: 'tts', label: '朗读' })
-  if (props.config.chat) sections.push({ id: 'chat', label: 'AI 对话' })
-  sections.push({ id: 'debug', label: '调试' })
+  if (props.config.translate) sections.push({ id: 'translation', label: t('settings.translation') })
+  if (props.config.tts) sections.push({ id: 'tts', label: t('settings.tts') })
+  if (props.config.chat) sections.push({ id: 'chat', label: t('settings.chat') })
+  sections.push({ id: 'debug', label: t('settings.debug') })
   return (
     <div className="fixed inset-0 z-90 grid place-items-center bg-overlay p-4">
-      <div className="flex h-[min(760px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-dialog sm:flex-row">
-        <aside className="w-full shrink-0 border-b border-line bg-surface-muted p-2 sm:w-56 sm:border-b-0 sm:border-r sm:p-3">
-          <div className="mb-3 px-2 text-ui-md font-semibold text-ink">设置</div>
+      <div className="flex h-[min(760px,92vh)] w-[min(980px,96vw)] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-dialog sm:flex-row">
+        <aside className="w-full shrink-0 border-b border-line bg-bg p-2 sm:w-56 sm:border-b-0 sm:border-r sm:p-3">
+          <div className="mb-3 px-2 text-ui-md font-semibold text-ink">{t('common.settings')}</div>
           <nav className="flex gap-1 overflow-x-auto sm:block sm:space-y-1">
             {sections.map(section => (
               <button
@@ -3574,7 +3843,9 @@ function SettingsDialog(props: {
                 type="button"
                 className={[
                   'block shrink-0 rounded-lg px-3 py-2 text-left text-ui-md sm:w-full',
-                  props.section === section.id ? 'bg-accent-soft font-medium text-accent-text' : 'text-ink-soft hover:bg-surface',
+                  props.section === section.id
+                    ? 'bg-surface font-medium text-ink shadow-sm ring-1 ring-line'
+                    : 'text-ink-soft hover:bg-surface hover:text-ink',
                 ].join(' ')}
                 onClick={() => props.setSection(section.id)}
               >
@@ -3596,16 +3867,16 @@ function SettingsDialog(props: {
               setSection={props.setSection}
               config={props.config}
               setConfig={props.setConfig}
-              extensionRuntimeStatus={props.extensionRuntimeStatus}
+              extensionRuntimeStatus={props.extensionRuntimeStatus ?? {}}
               currentBookFileName={props.currentBookFileName}
-              storyUploadBusy={props.storyUploadBusy}
-              storyUploadStatus={props.storyUploadStatus}
+              storyUploadBusy={props.storyUploadBusy ?? false}
+              storyUploadStatus={props.storyUploadStatus ?? ''}
               onUploadCurrentBook={props.onUploadCurrentBook}
             />
           </div>
           <div className="flex justify-end gap-2 border-t border-line p-4">
-            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>取消</button>
-            <button className={primaryButtonClass} type="button" onClick={props.onApply}>应用</button>
+            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>{t('common.cancel')}</button>
+            <button className={primaryButtonClass} type="button" onClick={props.onApply}>{t('common.apply')}</button>
           </div>
         </section>
       </div>
@@ -3632,21 +3903,44 @@ function SettingsSectionForm({
   currentBookFileName?: string
   storyUploadBusy: boolean
   storyUploadStatus: string
-  onUploadCurrentBook(config: DemoConfig): Promise<{ bookId: string; title?: string }>
+  onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
 }) {
+  const { language, setLanguage, t } = useI18n()
   const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
+  if (section === 'general') {
+    return (
+      <SettingsForm>
+        <SettingsGroup title={t('settings.languageSection')}>
+          <SettingsSelectRow
+            label={t('settings.interfaceLanguage')}
+            value={language}
+            options={[["zh-CN", t('common.simplifiedChinese')], ["en", t('common.english')]]}
+            onChange={value => {
+              const nextLanguage = normalizeAppLanguage(value)
+              setLanguage(nextLanguage)
+            }}
+          />
+        </SettingsGroup>
+        <p className="m-0 px-1 text-ui-sm text-muted">{t('settings.languageDescription')}</p>
+      </SettingsForm>
+    )
+  }
   if (section === 'font') {
     return <FontSettingsForm config={config} setConfig={setConfig} />
   }
   if (section === 'reading') {
     return (
-      <FormGrid>
-        <SelectField label="Layout" value={config.layout} onChange={value => update('layout', value as DemoConfig['layout'])} options={[['paginated', 'Paginated'], ['scrolled', 'Scrolled']]} />
-        <SelectField label="Spread" value={config.spread} onChange={value => update('spread', value)} options={[['2', 'Auto spread'], ['1', 'Single page']]} />
-        <SelectField label="Page fit" value={config.reflowablePageFit} onChange={value => update('reflowablePageFit', value as ReflowablePageFitMode)} options={[['viewport', 'Viewport'], ['paper', 'Paper page'], ['auto', 'Auto']]} />
-        <SelectField label="Fixed painter" value={config.fixedPainter} onChange={value => update('fixedPainter', value)} options={[['auto', 'Auto'], ['canvas', 'Canvas 2D'], ['webgpu', 'WebGPU']]} />
-        <CheckField label="Hyphenate" checked={config.hyphenate} onChange={value => update('hyphenate', value)} />
-      </FormGrid>
+      <SettingsForm>
+        <SettingsGroup title={t('settings.pageLayout')}>
+          <SettingsSelectRow label={t('settings.layout')} value={config.layout} onChange={value => update('layout', value as DemoConfig['layout'])} options={[['paginated', t('settings.paginated')], ['scrolled', t('settings.scrolled')]]} />
+          <SettingsSelectRow label={t('settings.spread')} value={config.spread} onChange={value => update('spread', value)} options={[['2', t('settings.autoSpread')], ['1', t('settings.singlePage')]]} />
+          <SettingsSelectRow label={t('settings.pageFit')} value={config.reflowablePageFit} onChange={value => update('reflowablePageFit', value as ReflowablePageFitMode)} options={[['viewport', t('settings.fitViewport')], ['paper', t('settings.paperPage')], ['auto', t('settings.auto')]]} />
+        </SettingsGroup>
+        <SettingsGroup title={t('settings.typesetting')}>
+          <SettingsSelectRow label={t('settings.fixedPainter')} value={config.fixedPainter} onChange={value => update('fixedPainter', value)} options={[['auto', t('settings.auto')], ['canvas', 'Canvas 2D'], ['webgpu', 'WebGPU']]} />
+          <SettingsToggleRow label={t('settings.hyphenate')} description={t('settings.hyphenateDescription')} checked={config.hyphenate} onChange={value => update('hyphenate', value)} />
+        </SettingsGroup>
+      </SettingsForm>
     )
   }
   if (section === 'extensions') {
@@ -3661,168 +3955,203 @@ function SettingsSectionForm({
   }
   if (section === 'translation') {
     return (
-      <FormGrid>
-        {config.professionalTranslation ? (
-          <>
-            <TextField label="Service URL" value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
-            <TextField label="Book ID" value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
-          </>
-        ) : (
-          <>
-            <TextField label="Base URL" value={config.baseURL} onChange={value => update('baseURL', value)} />
-            <TextField label="API key" value={config.apiKey} type="password" onChange={value => update('apiKey', value)} />
-            <TextField label="Model" value={config.model} onChange={value => update('model', value)} placeholder="gpt-4o-mini" />
-            <CheckField label="Translate TOC" checked={config.translateTOC} onChange={value => update('translateTOC', value)} />
-          </>
-        )}
-        <SelectField label="Mode" value={config.translateMode} onChange={value => update('translateMode', value as DemoConfig['translateMode'])} options={[['bilingual', 'Bilingual'], ['replace', 'Replace']]} />
-        <TextField label="Prefetch pages" value={config.prefetchPages} type="number" onChange={value => update('prefetchPages', value)} />
-      </FormGrid>
+      <SettingsForm>
+        <SettingsGroup title={t('settings.translationService')}>
+          {config.professionalTranslation ? (
+            <>
+              <SettingsTextRow label={t('settings.serviceUrl')} value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
+              <SettingsTextRow label={t('settings.bookId')} value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
+            </>
+          ) : (
+            <>
+              <SettingsSelectRow
+                label={t('settings.translationProvider')}
+                value={config.translationProvider}
+                onChange={value => update('translationProvider', value as DemoConfig['translationProvider'])}
+                options={[
+                  ['browser', t('settings.browserTranslation')],
+                  ['ai', t('settings.aiTranslation')],
+                ]}
+              />
+              {config.translationProvider === 'ai' ? (
+                <>
+                  <SettingsTextRow label={t('settings.apiUrl')} value={config.baseURL} onChange={value => update('baseURL', value)} />
+                  <SettingsTextRow label={t('settings.apiKey')} value={config.apiKey} type="password" onChange={value => update('apiKey', value)} />
+                  <SettingsTextRow label={t('settings.model')} value={config.model} onChange={value => update('model', value)} placeholder="gpt-4o-mini" />
+                </>
+              ) : (
+                <div className="px-4 py-3 text-ui-sm leading-relaxed text-muted sm:px-5">
+                  {t('settings.browserTranslationDescription')}
+                </div>
+              )}
+            </>
+          )}
+        </SettingsGroup>
+        <SettingsGroup title={t('settings.translationBehavior')}>
+          <SettingsSelectRow label={t('settings.translateTo')} value={resolveTranslationTargetLanguage(config.translationTargetLanguage, language)} onChange={value => update('translationTargetLanguage', normalizeAppLanguage(value))} options={[['zh-CN', t('common.simplifiedChinese')], ['en', t('common.english')]]} />
+          <SettingsSelectRow label={t('settings.displayMode')} value={config.translateMode} onChange={value => update('translateMode', value as DemoConfig['translateMode'])} options={[['bilingual', t('settings.bilingual')], ['replace', t('settings.replaceOriginal')]]} />
+          <SettingsTextRow label={t('settings.prefetchPages')} value={config.prefetchPages} type="number" onChange={value => update('prefetchPages', value)} />
+          {!config.professionalTranslation ? (
+            <SettingsToggleRow label={t('settings.translateToc')} description={t('settings.translateTocDescription')} checked={config.translateTOC} onChange={value => update('translateTOC', value)} />
+          ) : null}
+        </SettingsGroup>
+      </SettingsForm>
     )
   }
   if (section === 'tts') {
     return (
-      <FormGrid>
-        <TextField label="Endpoint" value={config.ttsEndpoint} onChange={value => update('ttsEndpoint', value)} />
-        <TextField label="Provider" value={config.ttsProvider} onChange={value => update('ttsProvider', value)} />
-        <TextField label="SFX provider" value={config.ttsSoundEffectProvider} onChange={value => update('ttsSoundEffectProvider', value)} />
-        <TextField label="Voice" value={config.ttsVoice} onChange={value => update('ttsVoice', value)} />
-        <TextField label="Segment chars" value={config.ttsSegmentChars} type="number" onChange={value => update('ttsSegmentChars', value)} />
-        <TextField label="Speed" value={config.ttsSpeed} type="number" onChange={value => update('ttsSpeed', value)} />
-        <CheckField label="Multi voice" checked={config.ttsMultiSpeaker} onChange={value => update('ttsMultiSpeaker', value)} />
-        <TextField label="TTS AI Base URL" value={config.ttsAIBaseURL} onChange={value => update('ttsAIBaseURL', value)} />
-        <TextField label="TTS AI API key" value={config.ttsAIAPIKey} type="password" onChange={value => update('ttsAIAPIKey', value)} />
-        <TextField label="TTS AI model" value={config.ttsModel} onChange={value => update('ttsModel', value)} placeholder="gpt-4o-mini" />
-        <TextField label="Narrator voice" value={config.ttsNarratorVoice} onChange={value => update('ttsNarratorVoice', value)} />
-        <TextField label="Male voices" value={config.ttsMaleVoices} onChange={value => update('ttsMaleVoices', value)} />
-        <TextField label="Female voices" value={config.ttsFemaleVoices} onChange={value => update('ttsFemaleVoices', value)} />
-        <TextField label="Other voice" value={config.ttsOtherVoice} onChange={value => update('ttsOtherVoice', value)} />
-      </FormGrid>
+      <SettingsForm>
+        <SettingsGroup title={t('settings.voiceService')}>
+          <SettingsTextRow label={t('settings.serviceUrl')} value={config.ttsEndpoint} onChange={value => update('ttsEndpoint', value)} />
+          <SettingsTextRow label={t('settings.provider')} value={config.ttsProvider} onChange={value => update('ttsProvider', value)} />
+          <SettingsTextRow label={t('settings.sfxProvider')} value={config.ttsSoundEffectProvider} onChange={value => update('ttsSoundEffectProvider', value)} />
+          <SettingsTextRow label={t('settings.defaultVoice')} value={config.ttsVoice} onChange={value => update('ttsVoice', value)} />
+          <SettingsTextRow label={t('settings.segmentChars')} value={config.ttsSegmentChars} type="number" onChange={value => update('ttsSegmentChars', value)} />
+          <SettingsTextRow label={t('settings.speed')} value={config.ttsSpeed} type="number" onChange={value => update('ttsSpeed', value)} />
+          <SettingsToggleRow label={t('settings.multiSpeaker')} description={t('settings.multiSpeakerDescription')} checked={config.ttsMultiSpeaker} onChange={value => update('ttsMultiSpeaker', value)} />
+        </SettingsGroup>
+        <SettingsGroup title={t('settings.aiReading')}>
+          <SettingsTextRow label={t('settings.apiUrl')} value={config.ttsAIBaseURL} onChange={value => update('ttsAIBaseURL', value)} />
+          <SettingsTextRow label={t('settings.apiKey')} value={config.ttsAIAPIKey} type="password" onChange={value => update('ttsAIAPIKey', value)} />
+          <SettingsTextRow label={t('settings.model')} value={config.ttsModel} onChange={value => update('ttsModel', value)} placeholder="gpt-4o-mini" />
+          <SettingsTextRow label={t('settings.narratorVoice')} value={config.ttsNarratorVoice} onChange={value => update('ttsNarratorVoice', value)} />
+          <SettingsTextRow label={t('settings.maleVoices')} value={config.ttsMaleVoices} onChange={value => update('ttsMaleVoices', value)} />
+          <SettingsTextRow label={t('settings.femaleVoices')} value={config.ttsFemaleVoices} onChange={value => update('ttsFemaleVoices', value)} />
+          <SettingsTextRow label={t('settings.otherVoice')} value={config.ttsOtherVoice} onChange={value => update('ttsOtherVoice', value)} />
+        </SettingsGroup>
+      </SettingsForm>
     )
   }
   if (section === 'chat') {
     return (
-      <FormGrid>
-        <TextField label="Base URL" value={config.chatBaseURL} onChange={value => update('chatBaseURL', value)} />
-        <TextField label="API key" value={config.chatAPIKey} type="password" onChange={value => update('chatAPIKey', value)} />
-        <TextField label="Model" value={config.chatModel} onChange={value => update('chatModel', value)} placeholder="gpt-4o-mini" />
-        <TextField label="Content chars" value={config.chatMaxContentChars} type="number" onChange={value => update('chatMaxContentChars', value)} />
-        <TextField label="Story service URL" value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
-        <TextField label="Story book ID" value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
-        <div className="grid gap-2 rounded-xl border border-line bg-surface p-3">
-          <div className="text-ui-md font-medium text-ink-soft">
-            Current file: {currentBookFileName || 'none'}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className={toolbarButtonClass}
-              type="button"
-              disabled={storyUploadBusy || !currentBookFileName}
-              onClick={() => {
-                void onUploadCurrentBook(config)
-                  .then(result => setConfig({ ...config, professionalBookId: result.bookId }))
-                  .catch(() => undefined)
-              }}
-            >
-              {storyUploadBusy ? 'Uploading...' : 'Upload current book'}
-            </button>
-            <span className="text-ui-sm text-muted">Uploads to /api/books/upload and fills Story book ID.</span>
-          </div>
-          {storyUploadStatus ? (
-            <p className="text-ui-sm text-muted">{storyUploadStatus}</p>
-          ) : null}
-        </div>
-        <p className="col-span-full text-ui-sm text-muted">
-          Story memory tools use the same rebook-service URL and Book ID as professional translation.
-        </p>
-      </FormGrid>
+      <SettingsForm>
+        <SettingsGroup title={t('settings.modelService')}>
+          <SettingsTextRow label={t('settings.apiUrl')} value={config.chatBaseURL} onChange={value => update('chatBaseURL', value)} />
+          <SettingsTextRow label={t('settings.apiKey')} value={config.chatAPIKey} type="password" onChange={value => update('chatAPIKey', value)} />
+          <SettingsTextRow label={t('settings.model')} value={config.chatModel} onChange={value => update('chatModel', value)} placeholder="gpt-4o-mini" />
+          <SettingsTextRow label={t('settings.maxContextChars')} value={config.chatMaxContentChars} type="number" onChange={value => update('chatMaxContentChars', value)} />
+        </SettingsGroup>
+        {STORY_MEMORY_ENABLED ? (
+          <>
+            <SettingsGroup title={t('settings.storyMemory')}>
+              <SettingsTextRow label={t('settings.serviceUrl')} value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
+              <SettingsTextRow label={t('settings.bookId')} value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
+              <SettingsActionRow
+                label={t('settings.currentBook')}
+                description={currentBookFileName || t('settings.openBookToUpload')}
+                actionLabel={storyUploadBusy ? t('settings.uploading') : t('settings.upload')}
+                status={storyUploadStatus}
+                disabled={storyUploadBusy || !currentBookFileName || !onUploadCurrentBook}
+                onAction={() => {
+                  if (!onUploadCurrentBook) return
+                  void onUploadCurrentBook(config)
+                    .then(result => setConfig({ ...config, professionalBookId: result.bookId }))
+                    .catch(() => undefined)
+                }}
+              />
+            </SettingsGroup>
+            <p className="m-0 px-1 text-ui-sm text-muted">
+              {t('settings.storyMemoryNote')}
+            </p>
+          </>
+        ) : null}
+      </SettingsForm>
     )
   }
   return (
-    <FormGrid>
-      <CheckField label="Debug logging" checked={config.debug} onChange={value => update('debug', value)} />
-    </FormGrid>
+    <SettingsForm>
+      <SettingsGroup title={t('settings.developerOptions')}>
+        <SettingsToggleRow label={t('settings.debugLogs')} description={t('settings.debugLogsDescription')} checked={config.debug} onChange={value => update('debug', value)} />
+      </SettingsGroup>
+    </SettingsForm>
   )
 }
 
 function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig(config: DemoConfig): void }) {
+  const { t } = useI18n()
   const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
   const families = getReaderFontFamilies(config)
   const previewFamily = config.defaultFont === 'serif' ? families.serif : families.sansSerif
 
   return (
-    <div className="min-h-full bg-surface-muted p-5 sm:p-7">
-      <div className="mx-auto grid max-w-2xl gap-6">
-        <FontSettingsGroup title="字体类型">
-          <FontSelectRow
-            label="默认字体"
+    <SettingsForm>
+        <SettingsGroup title={t('settings.fontType')}>
+          <SettingsSelectRow
+            label={t('settings.defaultFont')}
             value={config.defaultFont}
-            options={[["serif", "衬线字体"], ["sans-serif", "无衬线字体"]]}
+            options={[["serif", t('settings.serif')], ["sans-serif", t('settings.sansSerif')]]}
             onChange={value => update('defaultFont', value as ReaderDefaultFont)}
           />
-          <FontSelectRow
-            label="中文字体"
+          <SettingsSelectRow
+            label={t('settings.cjkFont')}
             value={config.defaultCJKFont}
             options={CJK_FONT_OPTIONS}
             previewFamily={config.defaultCJKFont}
             onChange={value => update('defaultCJKFont', value)}
           />
-        </FontSettingsGroup>
+        </SettingsGroup>
 
-        <FontSettingsGroup title="字体选择">
-          <FontSelectRow
-            label="衬线字体"
+        <SettingsGroup title={t('settings.fontSelection')}>
+          <SettingsSelectRow
+            label={t('settings.serif')}
             value={config.serifFont}
             options={SERIF_FONT_OPTIONS}
             previewFamily={config.serifFont}
             onChange={value => update('serifFont', value)}
           />
-          <FontSelectRow
-            label="无衬线字体"
+          <SettingsSelectRow
+            label={t('settings.sansSerif')}
             value={config.sansSerifFont}
             options={SANS_SERIF_FONT_OPTIONS}
             previewFamily={config.sansSerifFont}
             onChange={value => update('sansSerifFont', value)}
           />
-          <FontSelectRow
-            label="等宽字体"
+          <SettingsSelectRow
+            label={t('settings.monospace')}
             value={config.monospaceFont}
             options={MONOSPACE_FONT_OPTIONS}
             previewFamily={config.monospaceFont}
             onChange={value => update('monospaceFont', value)}
           />
-        </FontSettingsGroup>
+        </SettingsGroup>
 
-        <FontSettingsGroup title="文字显示">
-          <FontSelectRow
-            label="字号"
+        <SettingsGroup title={t('settings.textDisplay')}>
+          <SettingsSelectRow
+            label={t('settings.fontSize')}
             value={config.fontSize}
             options={[["14px", "14 px"], ["16px", "16 px"], ["18px", "18 px"], ["20px", "20 px"], ["22px", "22 px"]]}
             onChange={value => update('fontSize', value)}
           />
-          <FontToggleRow
-            label="覆盖书籍字体"
-            description="开启后忽略书籍自带字体，统一使用上面的设置"
+          <SettingsToggleRow
+            label={t('settings.overrideBookFonts')}
+            description={t('settings.overrideBookFontsDescription')}
             checked={config.overrideBookFonts}
             onChange={value => update('overrideBookFonts', value)}
           />
-        </FontSettingsGroup>
+        </SettingsGroup>
 
         <div className="rounded-xl border border-line bg-surface px-5 py-4">
-          <div className="mb-2 text-ui-sm font-medium text-muted">字体预览</div>
+          <div className="mb-2 text-ui-sm font-medium text-muted">{t('settings.fontPreview')}</div>
           <p className="m-0 text-ui-xl text-ink" style={{ fontFamily: previewFamily }}>
-            阅读让思想抵达更远的地方。The quick brown fox jumps over the lazy dog.
+            {t('settings.fontPreviewText')}
           </p>
         </div>
         <p className="m-0 text-ui-sm text-muted">
-          字体通过 CDN 按需加载；网络不可用时会自动回退到设备字体。设置仅影响可重排格式，PDF 与 CBZ 保持原始版面。
+          {t('settings.fontCdnNote')}
         </p>
-      </div>
+    </SettingsForm>
+  )
+}
+
+function SettingsForm({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-full bg-surface p-5 sm:p-7">
+      <div className="mx-auto grid max-w-2xl gap-6">{children}</div>
     </div>
   )
 }
 
-function FontSettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
       <h3 className="mb-2.5 px-1 text-ui-sm font-medium text-muted">{title}</h3>
@@ -3833,7 +4162,7 @@ function FontSettingsGroup({ title, children }: { title: string; children: React
   )
 }
 
-function FontSelectRow({
+function SettingsSelectRow({
   label,
   value,
   options,
@@ -3851,7 +4180,7 @@ function FontSelectRow({
       <span className="text-ui-md font-medium text-ink-soft">{label}</span>
       <Select
         className="min-w-36 max-w-[58%]"
-        buttonClassName="border-transparent bg-surface-muted"
+        buttonClassName="!border-line bg-bg hover:!border-line-strong hover:bg-surface"
         value={value}
         options={options}
         ariaLabel={label}
@@ -3859,6 +4188,61 @@ function FontSelectRow({
         onChange={onChange}
       />
     </label>
+  )
+}
+
+function SettingsTextRow({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange(value: string): void
+  type?: string
+  placeholder?: string
+}) {
+  return (
+    <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+      <span className="shrink-0 text-ui-md font-medium text-ink-soft">{label}</span>
+      <input
+        className={`${inputClass} min-w-0 max-w-md basis-2/3 !border-line bg-bg hover:!border-line-strong focus:!border-accent`}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={event => onChange(event.target.value)}
+      />
+    </label>
+  )
+}
+
+function SettingsActionRow({
+  label,
+  description,
+  actionLabel,
+  status,
+  disabled,
+  onAction,
+}: {
+  label: string
+  description: string
+  actionLabel: string
+  status?: string
+  disabled?: boolean
+  onAction(): void
+}) {
+  return (
+    <div className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+      <span className="min-w-0">
+        <span className="block text-ui-md font-medium text-ink-soft">{label}</span>
+        <span className="mt-0.5 block truncate text-ui-sm text-muted">{status || description}</span>
+      </span>
+      <button className={toolbarButtonClass} type="button" disabled={disabled} onClick={onAction}>
+        {actionLabel}
+      </button>
+    </div>
   )
 }
 
@@ -3888,7 +4272,7 @@ function Toggle({
   )
 }
 
-function FontToggleRow({
+function SettingsToggleRow({
   label,
   description,
   checked,
@@ -4104,6 +4488,7 @@ function Footer({
   onPlayTTS(): void
   onStopTTS(): void
 }) {
+  const { t } = useI18n()
   if (!ttsEnabled) return null
   return (
     <footer className="flex h-11 shrink-0 items-center gap-3 border-t border-line bg-surface/92 px-4 text-ui-sm text-muted">
@@ -4111,15 +4496,11 @@ function Footer({
       <div className="min-w-0 max-w-xs truncate">{ttsStatus}</div>
       <button className={toolbarButtonClass} type="button" onClick={onPlayTTS}>
         <Volume2 className="h-4 w-4" />
-        朗读
+        {t('reader.readAloud')}
       </button>
-      <button className={toolbarButtonClass} type="button" onClick={onStopTTS}>停止</button>
+      <button className={toolbarButtonClass} type="button" onClick={onStopTTS}>{t('reader.stop')}</button>
     </footer>
   )
-}
-
-function FormGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid max-w-2xl gap-4 p-5">{children}</div>
 }
 
 function TextField({ label, value, onChange, type = 'text', placeholder }: { label: string; value: string; onChange(value: string): void; type?: string; placeholder?: string }) {
@@ -4169,6 +4550,8 @@ function Select({
   const buttonRef = useRef<HTMLButtonElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const [open, setOpen] = useState(false)
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const selectedIndex = Math.max(0, options.findIndex(([optionValue]) => optionValue === value))
   const [activeIndex, setActiveIndex] = useState(selectedIndex)
   const selectedLabel = options[selectedIndex]?.[1] ?? value
@@ -4180,17 +4563,51 @@ function Select({
 
   const openList = () => {
     setActiveIndex(selectedIndex)
+    setPortalHost(containerRef.current?.closest<HTMLElement>('.reader-shell') ?? document.body)
     setOpen(true)
   }
+
+  const updateMenuPosition = useCallback(() => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const gap = 6
+    const viewportPadding = 8
+    const estimatedHeight = Math.min(240, options.length * 37 + 12)
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding
+    const placeAbove = spaceBelow < estimatedHeight && rect.top > spaceBelow
+    const right = Math.max(viewportPadding, window.innerWidth - rect.right)
+
+    setMenuStyle({
+      position: 'fixed',
+      minWidth: rect.width,
+      maxWidth: Math.min(288, window.innerWidth - viewportPadding * 2),
+      right,
+      ...(placeAbove
+        ? { bottom: window.innerHeight - rect.top + gap, top: 'auto' }
+        : { top: rect.bottom + gap, bottom: 'auto' }),
+    })
+  }, [options.length])
 
   useEffect(() => {
     if (!open) return
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (!containerRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false)
     }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [open])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    updateMenuPosition()
+    window.addEventListener('resize', updateMenuPosition)
+    window.addEventListener('scroll', updateMenuPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition)
+      window.removeEventListener('scroll', updateMenuPosition, true)
+    }
+  }, [open, updateMenuPosition])
 
   useEffect(() => {
     if (!open) return
@@ -4245,10 +4662,11 @@ function Select({
         </span>
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
       </button>
-      {open ? (
+      {open && portalHost ? createPortal(
         <div
           ref={listRef}
-          className="absolute right-0 top-[calc(100%+0.375rem)] z-80 max-h-60 min-w-full w-max max-w-72 overflow-auto rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none"
+          className="z-[100] max-h-60 w-max overflow-auto rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none"
+          style={menuStyle}
           role="listbox"
         >
           {options.map(([optionValue, optionLabel], index) => {
@@ -4276,27 +4694,10 @@ function Select({
               </button>
             )
           })}
-        </div>
+        </div>,
+        portalHost,
       ) : null}
     </div>
-  )
-}
-
-function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange(value: string): void; options: Array<[string, string]> }) {
-  return (
-    <label className="grid gap-1">
-      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
-      <Select value={value} options={options} ariaLabel={label} onChange={onChange} />
-    </label>
-  )
-}
-
-function CheckField({ label, checked, onChange }: { label: string; checked: boolean; onChange(value: boolean): void }) {
-  return (
-    <label className="flex items-center justify-between rounded-lg border border-line px-3 py-2">
-      <span className="text-ui-md font-medium text-ink-soft">{label}</span>
-      <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} />
-    </label>
   )
 }
 
@@ -4308,7 +4709,7 @@ function ProgressBar({ value }: { value: number }) {
   )
 }
 
-function loadConfig(): DemoConfig {
+export function loadReaderConfig(): DemoConfig {
   try {
     return normalizeConfig(JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'))
   } catch {
@@ -4316,7 +4717,7 @@ function loadConfig(): DemoConfig {
   }
 }
 
-function saveConfig(config: DemoConfig) {
+export function saveReaderConfig(config: DemoConfig) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(normalizeConfig(config)))
 }
 
@@ -4336,13 +4737,19 @@ function getDemoExtensionState(item: RebookExtensionCatalogItem, config: DemoCon
   const enabled = installed && featureEnabled
   switch (manifest.id) {
     case TRANSLATION_EXTENSION_ID:
+      const browserProvider = config.translationProvider === 'browser'
+      const translationConfigured = browserProvider ? isBrowserTranslationSupported() : Boolean(config.apiKey.trim())
       return {
         installed,
         enabled,
-        configured: Boolean(config.apiKey.trim()),
-        message: config.apiKey.trim()
-          ? `Translates to zh-CN in ${config.translateMode} mode.`
-          : 'Requires a translation API key and model settings.',
+        configured: translationConfigured,
+        message: browserProvider
+          ? isBrowserTranslationSupported()
+            ? 'Uses the browser built-in translation model.'
+            : 'Built-in translation is not supported by this browser.'
+          : config.apiKey.trim()
+            ? `Uses AI translation in ${config.translateMode} mode.`
+            : 'Requires a translation API key and model settings.',
         settingsSection: 'translation',
       }
     case PROFESSIONAL_TRANSLATION_EXTENSION_ID:
@@ -4405,19 +4812,38 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
     theme: _legacyReaderTheme,
     ...supportedValue
   } = value as Partial<DemoConfig> & { trial?: unknown; trialPages?: unknown; theme?: unknown }
+  const translationProvider = normalizeTranslationProvider(
+    supportedValue.translationProvider,
+    typeof supportedValue.apiKey === 'string' && supportedValue.apiKey.trim() ? 'ai' : 'browser',
+  )
+  const migratedBrowserTranslation = supportedValue.translationProvider === undefined && translationProvider === 'browser'
   let config: DemoConfig = {
     ...defaultConfig,
     ...supportedValue,
     reflowablePageFit: normalizeReflowablePageFit(supportedValue.reflowablePageFit),
+    translationProvider,
+    translationRuntimeEnabled: migratedBrowserTranslation
+      ? false
+      : supportedValue.translationRuntimeEnabled ?? defaultConfig.translationRuntimeEnabled,
+    translationTargetLanguage: normalizeTranslationTargetLanguage(supportedValue.translationTargetLanguage),
     extensionInstallations: normalizeDemoExtensionInstallations(supportedValue.extensionInstallations),
   }
   const storedExtensionDefaultsVersion = Number(supportedValue.extensionDefaultsVersion) || 0
-  if (storedExtensionDefaultsVersion < BUILT_IN_EXTENSION_DEFAULTS_VERSION) {
+  if (storedExtensionDefaultsVersion < TRANSLATION_DEFAULTS_VERSION) {
     config = {
       ...config,
-      chat: true,
+      translate: true,
+      professionalTranslation: false,
       extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
     }
+  } else if (storedExtensionDefaultsVersion < BUILT_IN_EXTENSION_DEFAULTS_VERSION) {
+    config = {
+      ...config,
+      extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
+    }
+  }
+  if (storedExtensionDefaultsVersion < AI_CHAT_DEFAULTS_VERSION) {
+    config = { ...config, chat: true }
   }
   const manager = createDemoExtensionManager(config)
   // Before built-in extensions had explicit installation records, AI Chat was
@@ -4468,6 +4894,25 @@ function normalizeDemoExtensionInstallations(value: unknown): DemoExtensionInsta
 function normalizeReflowablePageFit(value: unknown): ReflowablePageFitMode {
   if (value === 'auto' || value === 'paper' || value === 'viewport') return value
   return defaultConfig.reflowablePageFit
+}
+
+function normalizeTranslationTargetLanguage(value: unknown): DemoConfig['translationTargetLanguage'] {
+  if (value === 'en' || value === 'zh-CN' || value === 'interface') return value
+  return 'interface'
+}
+
+function normalizeTranslationProvider(
+  value: unknown,
+  fallback: DemoConfig['translationProvider'] = 'browser',
+): DemoConfig['translationProvider'] {
+  return value === 'browser' || value === 'ai' ? value : fallback
+}
+
+function resolveTranslationTargetLanguage(
+  value: DemoConfig['translationTargetLanguage'],
+  interfaceLanguage: AppLanguage,
+): AppLanguage {
+  return value === 'interface' ? interfaceLanguage : value
 }
 
 function isDemoExtensionFeatureControlled(manifest: RebookExtensionManifest): boolean {
@@ -4635,20 +5080,21 @@ function getChatCommandToken(input: string): string | null {
   return /^\/[^\s]*/.exec(value)?.[0].toLowerCase() ?? null
 }
 
-function getChatCommandSuggestions(input: string): ChatCommand[] {
+function getChatCommandSuggestions(input: string, language: AppLanguage): ChatCommand[] {
   const value = input.trimStart()
   const token = getChatCommandToken(value)
   if (!token) return []
-  const exactCommand = CHAT_COMMANDS.find(command => command.name === token)
+  const commands = getChatCommands(language)
+  const exactCommand = commands.find(command => command.name === token)
   const hasArgs = /\s/.test(value.slice(token.length))
   if (exactCommand && hasArgs) return []
-  return CHAT_COMMANDS.filter(command => command.name.startsWith(token))
+  return commands.filter(command => command.name.startsWith(token))
 }
 
-function resolveChatCommand(input: string): { prompt?: string; error?: string; insertText?: string } | null {
+function resolveChatCommand(input: string, language: AppLanguage): { prompt?: string; error?: string; insertText?: string } | null {
   const match = /^(\/[^\s]+)(?:\s+([\s\S]*))?$/.exec(input.trim())
   if (!match) return null
-  const command = CHAT_COMMANDS.find(item => item.name === match[1].toLowerCase())
+  const command = getChatCommands(language).find(item => item.name === match[1].toLowerCase())
   if (!command) return null
   const args = (match[2] ?? '').trim()
   if (command.requiresArgs && !args) {
@@ -4723,13 +5169,13 @@ function getChatReferenceSuggestions(
     .map(item => item.reference)
 }
 
-async function buildChatReferenceOptions(reader: any, book: any): Promise<ChatReference[]> {
-  const currentPageReferences = await buildCurrentPageReferenceOptions(reader, book)
-  const sectionReferences = buildSectionReferenceOptions(book)
+async function buildChatReferenceOptions(reader: any, book: any, t: Translate): Promise<ChatReference[]> {
+  const currentPageReferences = await buildCurrentPageReferenceOptions(reader, book, t)
+  const sectionReferences = buildSectionReferenceOptions(book, t)
   return dedupeChatReferences([...currentPageReferences, ...sectionReferences]).slice(0, MAX_CHAT_REFERENCE_OPTIONS)
 }
 
-function buildSectionReferenceOptions(book: any): ChatReference[] {
+function buildSectionReferenceOptions(book: any, t: Translate): ChatReference[] {
   const references: ChatReference[] = []
   const units = getReadableContentUnits(book)
   const tocItems = flattenTOCItems(book.toc ?? [])
@@ -4744,8 +5190,8 @@ function buildSectionReferenceOptions(book: any): ChatReference[] {
       kind: 'section',
       label: item.label,
       description: unit?.title && unit.title !== item.label
-        ? `章节 ${unitIndex + 1} · ${unit.title}`
-        : `章节 ${unitIndex + 1}`,
+        ? `${t('reader.chapter')} ${unitIndex + 1} · ${unit.title}`
+        : `${t('reader.chapter')} ${unitIndex + 1}`,
       href: createChatReferenceHref(unitIndex, blockId),
       unitIndex,
       blockId,
@@ -4759,7 +5205,7 @@ function buildSectionReferenceOptions(book: any): ChatReference[] {
       id: `section:${unit.index}:unit`,
       kind: 'section',
       label: unit.title,
-      description: unit.kind === 'page' ? `页面 ${unit.index + 1}` : `章节 ${unit.index + 1}`,
+      description: unit.kind === 'page' ? `${t('reader.page')} ${unit.index + 1}` : `${t('reader.chapter')} ${unit.index + 1}`,
       href: createChatReferenceHref(unit.index),
       unitIndex: unit.index,
       excerpt: unit.title,
@@ -4769,7 +5215,7 @@ function buildSectionReferenceOptions(book: any): ChatReference[] {
   return dedupeChatReferences(references)
 }
 
-async function buildCurrentPageReferenceOptions(reader: any, book: any): Promise<ChatReference[]> {
+async function buildCurrentPageReferenceOptions(reader: any, book: any, t: Translate): Promise<ChatReference[]> {
   const loc = reader?.getLocation?.()
   const unitIndex = typeof loc?.index === 'number' ? loc.index : 0
   const unit = getReadableContentUnit(book, unitIndex)
@@ -4798,7 +5244,7 @@ async function buildCurrentPageReferenceOptions(reader: any, book: any): Promise
         id: `paragraph:${unitIndex}:${group.blockId ?? group.order}`,
         kind: 'paragraph',
         label,
-        description: unit?.title ? `当前页 · ${unit.title}` : `当前页 · ${unitIndex + 1}`,
+        description: unit?.title ? `${t('reader.currentPage')} · ${unit.title}` : `${t('reader.currentPage')} · ${unitIndex + 1}`,
         href: createChatReferenceHref(unitIndex, group.blockId),
         unitIndex,
         blockId: group.blockId,
@@ -4808,18 +5254,21 @@ async function buildCurrentPageReferenceOptions(reader: any, book: any): Promise
     .filter((reference): reference is ChatReference => reference !== null)
 }
 
-function buildChatMessageContentWithReferences(content: string, references: readonly ChatReference[]): string {
+function buildChatMessageContentWithReferences(content: string, references: readonly ChatReference[], t: Translate, language: AppLanguage): string {
   if (!references.length) return content
-  const base = content.trim() || '请结合我引用的内容回答。'
+  const english = language === 'en'
+  const base = content.trim() || (english ? 'Answer using the referenced content.' : '请结合我引用的内容回答。')
   const referenceText = references.map((reference, index) => [
-    `${index + 1}. ${reference.kind === 'section' ? '章节' : '段落'}：${reference.label}`,
+    `${index + 1}. ${reference.kind === 'section' ? t('reader.chapter') : t('reader.paragraph')}: ${reference.label}`,
     `href: ${reference.href}`,
-    reference.description ? `位置: ${reference.description}` : '',
-    reference.excerpt ? `摘录: ${reference.excerpt}` : '',
+    reference.description ? `${english ? 'Location' : '位置'}: ${reference.description}` : '',
+    reference.excerpt ? `${english ? 'Excerpt' : '摘录'}: ${reference.excerpt}` : '',
   ].filter(Boolean).join('\n')).join('\n\n')
   return [
     base,
-    '用户在输入框中引用了以下书籍位置。回答涉及这些引用内容时，请优先使用对应 href 作为出处链接：',
+    english
+      ? 'The user referenced the following book locations. Prefer their href values as citations when the answer uses this content:'
+      : '用户在输入框中引用了以下书籍位置。回答涉及这些引用内容时，请优先使用对应 href 作为出处链接：',
     referenceText,
   ].join('\n\n')
 }
@@ -4913,14 +5362,14 @@ function parseRebookJumpHref(href: string): RebookJumpTarget | null {
   }
 }
 
-function toAIChatMessage(message: ChatMessage) {
+function toAIChatMessage(message: ChatMessage, t: Translate) {
   if (message.role !== 'user' || !message.attachments?.length) {
     return { role: message.role, content: message.content }
   }
   return {
     role: message.role,
     content: [
-      { type: 'text', text: message.content || '请分析这些图片。' },
+      { type: 'text', text: message.content || t('reader.analyzeImages') },
       ...message.attachments.map(attachment => ({
         type: 'image',
         image: attachment.data,
@@ -5098,8 +5547,8 @@ function formatBookContributors(value: any): string {
   }).filter(Boolean).join(', ')
 }
 
-function titleFromBookFileName(fileName: string): string {
-  return fileName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || '未命名书籍'
+function titleFromBookFileName(fileName: string, fallback: string): string {
+  return fileName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || fallback
 }
 
 function flattenTOCItems(items: any[]): any[] {
@@ -5417,6 +5866,17 @@ function formatProgress(location: any) {
   return `${Math.round(value * 100)}%`
 }
 
+function getTranslationRuntimeErrorMessage(error: unknown, t: Translate): string {
+  const message = formatError(error)
+  if (/secure context|https|localhost/i.test(message)) return t('reader.browserTranslationSecureContext')
+  if (/user gesture/i.test(message)) return t('reader.browserTranslationGestureRequired')
+  if (/not supported by this browser/i.test(message)) return t('reader.browserTranslationUnsupported')
+  if (/unavailable for|unable to create translator|source and target language/i.test(message)) {
+    return t('reader.browserTranslationPairUnavailable')
+  }
+  return t('reader.translationUnavailable')
+}
+
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
@@ -5457,13 +5917,13 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 
 function panelButtonClass(active: boolean) {
   return active
-    ? `${toolbarButtonClass} bg-accent-soft text-accent-text ring-1 ring-accent-softer`
+    ? `${toolbarButtonClass} bg-surface-muted`
     : toolbarButtonClass
 }
 
 function sidebarToolButtonClass(active: boolean) {
   return active
-    ? `${iconButtonClass} bg-accent-soft text-accent-text ring-1 ring-accent-softer`
+    ? `${iconButtonClass} bg-surface-muted`
     : iconButtonClass
 }
 
