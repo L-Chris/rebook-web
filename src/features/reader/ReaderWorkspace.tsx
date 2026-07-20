@@ -1,5 +1,6 @@
 import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type CSSProperties, type HTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -48,7 +49,6 @@ import {
   createTTSExtension,
   createTranslationExtension,
   createBrowserTranslationProvider,
-  isBrowserTranslationSupported,
   AI_CHAT_EXTENSION_ID,
   PROFESSIONAL_TRANSLATION_EXTENSION_ID,
   TRANSLATION_EXTENSION_ID,
@@ -104,6 +104,8 @@ import {
   READER_CONFIG_STORAGE_KEY,
 } from '../../lib/extension-marketplace'
 import { useAppTheme } from '../theme/ThemeContext'
+import { useAuth } from '../auth/AuthContext'
+import { CloudDriveSettings } from '../cloud-drive/CloudDrivePage'
 import {
   iconButtonClass,
   inputClass,
@@ -122,14 +124,13 @@ import {
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
 type SidebarView = 'toc' | 'search'
-export type SettingsSection = 'general' | 'font' | 'reading' | 'extensions' | 'translation' | 'tts' | 'chat' | 'debug'
+export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'chat' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
 export type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
 
 export interface DemoConfig {
   layout: 'paginated' | 'scrolled'
   spread: string
-  fixedPainter: string
   reflowablePageFit: ReflowablePageFitMode
   fontSize: string
   defaultFont: ReaderDefaultFont
@@ -497,7 +498,6 @@ function writeSidebarPinnedPreference(pinned: boolean): void {
 const defaultConfig: DemoConfig = {
   layout: 'paginated',
   spread: '2',
-  fixedPainter: 'canvas',
   reflowablePageFit: 'viewport',
   fontSize: '16px',
   ...READER_FONT_DEFAULTS,
@@ -814,6 +814,7 @@ function ReaderWorkspace({
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const readerRef = useRef<any>(null)
   const bookRef = useRef<any>(null)
+  const translatedTOCRef = useRef<readonly TOCItem[] | null>(null)
   const currentFileRef = useRef<File | null>(null)
   const bookCoverUrlRef = useRef<string | null>(null)
   const progressSaveTimerRef = useRef<number | null>(null)
@@ -832,7 +833,7 @@ function ReaderWorkspace({
   const { theme: appTheme } = useAppTheme()
   const [draftConfig, setDraftConfig] = useState<DemoConfig>(config)
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
-  const [extensionRuntimeStatus, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
+  const [, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [book, setBook] = useState<any>(null)
@@ -1272,7 +1273,10 @@ function ReaderWorkspace({
           mode: () => configRef.current.translateMode,
           translateTOC: () => configRef.current.translateTOC,
           prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
-          onTOCUpdate: () => refreshTOC(),
+          onTOCUpdate: (items: readonly TOCItem[] | undefined) => {
+            translatedTOCRef.current = items ?? null
+            refreshTOC(readerRef.current, readerRef.current?.getLocation?.(), items ?? null)
+          },
           onUpdate,
         }
         if (cfg.translationProvider === 'browser') {
@@ -1357,7 +1361,7 @@ function ReaderWorkspace({
       maxColumnCount: Number(cfg.spread),
       parserOptions,
       plugins: buildPlugins(cfg),
-      fixedPainter: cfg.fixedPainter,
+      fixedPainter: 'canvas',
       styles: getReaderStyles(cfg, appTheme),
     })
   }, [buildPlugins, appTheme])
@@ -1485,6 +1489,8 @@ function ReaderWorkspace({
   const openFileWithReader = async (file: File, targetReader = readerRef.current, options: { preserveFile?: boolean } = {}) => {
     if (!targetReader) return
     const previousFile = currentFileRef.current
+    const previousTranslatedTOC = translatedTOCRef.current
+    translatedTOCRef.current = null
     setBusy(true)
     setStatus(t('reader.openingFile', { name: file.name }))
     try {
@@ -1537,6 +1543,7 @@ function ReaderWorkspace({
           : formatError(error)
       setStatus(t('reader.openFailed', { error: detail }))
       if (!options.preserveFile) currentFileRef.current = previousFile
+      if (bookRef.current) translatedTOCRef.current = previousTranslatedTOC
       if (!bookRef.current) setBook(null)
       appendDebug('open failed', detail)
     } finally {
@@ -1603,9 +1610,14 @@ function ReaderWorkspace({
     }
   }, [libraryBookId])
 
-  const refreshTOC = (reader = readerRef.current, currentLocation = reader?.getLocation?.()) => {
+  const refreshTOC = (
+    reader = readerRef.current,
+    currentLocation = reader?.getLocation?.(),
+    translatedItems = translatedTOCRef.current,
+  ) => {
     if (!reader) return
-    setTocItems(reader.getTOCViewItems({ location: currentLocation }))
+    const items = reader.getTOCViewItems({ location: currentLocation }) as TOCViewItem[]
+    setTocItems(translatedItems ? applyTranslatedTOCLabels(items, translatedItems) : items)
   }
 
   const bindTranslationRuntime = (reader: any) => {
@@ -1613,6 +1625,7 @@ function ReaderWorkspace({
     translationRuntimeUnsubscribeRef.current = null
     const runtime = reader?.getExtensionRuntime?.(TRANSLATION_EXTENSION_ID) as TranslationRuntime | undefined
     if (!runtime) {
+      translatedTOCRef.current = null
       setTranslationRuntimeState(configRef.current.translationRuntimeEnabled ? 'idle' : 'paused')
       setTranslationRuntimeError('')
       return
@@ -1620,6 +1633,13 @@ function ReaderWorkspace({
     let previousState = runtime.state
     translationRuntimeUnsubscribeRef.current = runtime.subscribe(snapshot => {
       setTranslationRuntimeState(snapshot.state)
+      if (
+        (snapshot.state === 'running' && previousState !== 'running')
+        || snapshot.state === 'paused'
+        || snapshot.state === 'error'
+      ) {
+        translatedTOCRef.current = null
+      }
       if (snapshot.state === 'error') {
         const message = getTranslationRuntimeErrorMessage(snapshot.error, t)
         setTranslationRuntimeError(message)
@@ -1641,11 +1661,33 @@ function ReaderWorkspace({
   }
 
   const applyConfig = async () => {
+    const current = configRef.current
     const next = { ...draftConfig, chatPanelWidth: String(chatPanelWidth) }
+    const changedKeys = getChangedConfigKeys(current, next)
     setConfig(next)
     configRef.current = next
     saveReaderConfig(next)
     setSettingsOpen(false)
+
+    if (changedKeys.length === 0) {
+      readerRef.current?.setStyles?.(getReaderStyles(next, appTheme))
+      return
+    }
+
+    const canRefreshInPlace = changedKeys.every(key => (
+      key === 'translateMode' || key === 'chatPanelWidth'
+    ))
+    if (canRefreshInPlace && readerRef.current) {
+      const reader = readerRef.current
+      reader.setStyles?.(getReaderStyles(next, appTheme))
+      if (changedKeys.includes('translateMode')) {
+        bookRef.current?.refreshTranslatedTOC?.()
+        await reader.refresh?.()
+        refreshTOC(reader)
+      }
+      return
+    }
+
     await resetReader(next)
   }
 
@@ -2112,7 +2154,6 @@ function ReaderWorkspace({
           setSection={setSettingsSection}
           config={draftConfig}
           setConfig={setDraftConfig}
-          extensionRuntimeStatus={extensionRuntimeStatus}
           currentBookFileName={currentFileRef.current?.name}
           storyUploadBusy={STORY_MEMORY_ENABLED ? storyUploadBusy : undefined}
           storyUploadStatus={STORY_MEMORY_ENABLED ? storyUploadStatus : undefined}
@@ -2634,6 +2675,23 @@ function findActiveTOCPath(items: readonly DemoTOCItem[], parents: readonly stri
     if (childPath.length) return childPath
   }
   return []
+}
+
+function applyTranslatedTOCLabels(
+  items: readonly TOCViewItem[],
+  translatedItems: readonly TOCItem[],
+): TOCViewItem[] {
+  return items.map((item, index) => {
+    const translatedItem = translatedItems[index]
+    if (!translatedItem) return item
+    return {
+      ...item,
+      label: translatedItem.label || item.label,
+      children: item.children?.length
+        ? applyTranslatedTOCLabels(item.children, translatedItem.subitems ?? [])
+        : item.children,
+    }
+  })
 }
 
 function collectTOCItemIds(items: readonly DemoTOCItem[]): Set<string> {
@@ -3813,7 +3871,6 @@ export function ReaderSettingsDialog(props: {
   setSection(section: SettingsSection): void
   config: DemoConfig
   setConfig(config: DemoConfig): void
-  extensionRuntimeStatus?: DemoExtensionRuntimeStatus
   currentBookFileName?: string
   storyUploadBusy?: boolean
   storyUploadStatus?: string
@@ -3826,6 +3883,7 @@ export function ReaderSettingsDialog(props: {
     { id: 'general', label: t('settings.general') },
     { id: 'font', label: t('settings.font') },
     { id: 'reading', label: t('settings.reading') },
+    { id: 'cloud', label: t('settings.cloud') },
   ]
   if (props.config.translate) sections.push({ id: 'translation', label: t('settings.translation') })
   if (props.config.tts) sections.push({ id: 'tts', label: t('settings.tts') })
@@ -3864,10 +3922,8 @@ export function ReaderSettingsDialog(props: {
           <div className="min-h-0 flex-1 overflow-auto">
             <SettingsSectionForm
               section={props.section}
-              setSection={props.setSection}
               config={props.config}
               setConfig={props.setConfig}
-              extensionRuntimeStatus={props.extensionRuntimeStatus ?? {}}
               currentBookFileName={props.currentBookFileName}
               storyUploadBusy={props.storyUploadBusy ?? false}
               storyUploadStatus={props.storyUploadStatus ?? ''}
@@ -3875,8 +3931,14 @@ export function ReaderSettingsDialog(props: {
             />
           </div>
           <div className="flex justify-end gap-2 border-t border-line p-4">
-            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>{t('common.cancel')}</button>
-            <button className={primaryButtonClass} type="button" onClick={props.onApply}>{t('common.apply')}</button>
+            {props.section === 'cloud' ? (
+              <button className={primaryButtonClass} type="button" onClick={props.onClose}>{t('common.close')}</button>
+            ) : (
+              <>
+                <button className={toolbarButtonClass} type="button" onClick={props.onClose}>{t('common.cancel')}</button>
+                <button className={primaryButtonClass} type="button" onClick={props.onApply}>{t('common.apply')}</button>
+              </>
+            )}
           </div>
         </section>
       </div>
@@ -3886,30 +3948,37 @@ export function ReaderSettingsDialog(props: {
 
 function SettingsSectionForm({
   section,
-  setSection,
   config,
   setConfig,
-  extensionRuntimeStatus,
   currentBookFileName,
   storyUploadBusy,
   storyUploadStatus,
   onUploadCurrentBook,
 }: {
   section: SettingsSection
-  setSection(section: SettingsSection): void
   config: DemoConfig
   setConfig(config: DemoConfig): void
-  extensionRuntimeStatus: DemoExtensionRuntimeStatus
   currentBookFileName?: string
   storyUploadBusy: boolean
   storyUploadStatus: string
   onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
 }) {
   const { language, setLanguage, t } = useI18n()
+  const { theme, setTheme } = useAppTheme()
+  const auth = useAuth()
+  const navigate = useNavigate()
   const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
   if (section === 'general') {
     return (
       <SettingsForm>
+        <SettingsGroup title={t('settings.appearance')}>
+          <SettingsSelectRow
+            label={t('settings.theme')}
+            value={theme}
+            options={[["light", t('common.lightMode')], ["dark", t('common.darkMode')]]}
+            onChange={value => setTheme(value === 'dark' ? 'dark' : 'light')}
+          />
+        </SettingsGroup>
         <SettingsGroup title={t('settings.languageSection')}>
           <SettingsSelectRow
             label={t('settings.interfaceLanguage')}
@@ -3921,7 +3990,21 @@ function SettingsSectionForm({
             }}
           />
         </SettingsGroup>
-        <p className="m-0 px-1 text-ui-sm text-muted">{t('settings.languageDescription')}</p>
+        <SettingsGroup title={t('settings.account')}>
+          <SettingsActionRow
+            label={auth.user?.displayName || auth.user?.email || t('settings.notSignedIn')}
+            description={auth.user?.email || t('settings.accountDescription')}
+            actionLabel={t(auth.user ? 'common.signOut' : 'common.signIn')}
+            disabled={auth.loading}
+            onAction={() => {
+              if (auth.user) {
+                void auth.logout()
+                return
+              }
+              navigate('/login', { state: { from: window.location.pathname } })
+            }}
+          />
+        </SettingsGroup>
       </SettingsForm>
     )
   }
@@ -3937,21 +4020,13 @@ function SettingsSectionForm({
           <SettingsSelectRow label={t('settings.pageFit')} value={config.reflowablePageFit} onChange={value => update('reflowablePageFit', value as ReflowablePageFitMode)} options={[['viewport', t('settings.fitViewport')], ['paper', t('settings.paperPage')], ['auto', t('settings.auto')]]} />
         </SettingsGroup>
         <SettingsGroup title={t('settings.typesetting')}>
-          <SettingsSelectRow label={t('settings.fixedPainter')} value={config.fixedPainter} onChange={value => update('fixedPainter', value)} options={[['auto', t('settings.auto')], ['canvas', 'Canvas 2D'], ['webgpu', 'WebGPU']]} />
           <SettingsToggleRow label={t('settings.hyphenate')} description={t('settings.hyphenateDescription')} checked={config.hyphenate} onChange={value => update('hyphenate', value)} />
         </SettingsGroup>
       </SettingsForm>
     )
   }
-  if (section === 'extensions') {
-    return (
-      <ExtensionsSettings
-        config={config}
-        setConfig={setConfig}
-        setSection={setSection}
-        extensionRuntimeStatus={extensionRuntimeStatus}
-      />
-    )
+  if (section === 'cloud') {
+    return <CloudDriveSettings />
   }
   if (section === 'translation') {
     return (
@@ -4136,9 +4211,6 @@ function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig
             {t('settings.fontPreviewText')}
           </p>
         </div>
-        <p className="m-0 text-ui-sm text-muted">
-          {t('settings.fontCdnNote')}
-        </p>
     </SettingsForm>
   )
 }
@@ -4294,189 +4366,6 @@ function SettingsToggleRow({
   )
 }
 
-function ExtensionsSettings({
-  config,
-  setConfig,
-  setSection,
-  extensionRuntimeStatus,
-}: {
-  config: DemoConfig
-  setConfig(config: DemoConfig): void
-  setSection(section: SettingsSection): void
-  extensionRuntimeStatus: DemoExtensionRuntimeStatus
-}) {
-  const [catalogLoading, setCatalogLoading] = useState(false)
-  const [catalogStatus, setCatalogStatus] = useState('')
-  const marketplaceCatalog = getDemoMarketplaceCatalogParseResult(config)
-  const extensionItems = createDemoExtensionManager(config).listItems()
-
-  const loadMarketplaceCatalog = async () => {
-    const url = config.extensionCatalogURL.trim()
-    if (!url) {
-      setCatalogStatus('Enter a catalog URL first.')
-      return
-    }
-    setCatalogLoading(true)
-    setCatalogStatus('')
-    try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`Catalog request failed with ${response.status}`)
-      const text = await response.text()
-      parseRebookExtensionCatalogEntries(JSON.parse(text), { source: 'marketplace' })
-      setConfig(normalizeConfig({ ...config, extensionCatalogJSON: text }))
-      setCatalogStatus('Catalog loaded.')
-    } catch (error) {
-      setCatalogStatus(`Catalog load failed: ${formatError(error)}`)
-    } finally {
-      setCatalogLoading(false)
-    }
-  }
-
-  return (
-    <div className="grid gap-3 p-5">
-      <section className="rounded-xl border border-line bg-surface p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="text-ui-md font-semibold text-ink">Marketplace catalog</h3>
-            <p className="mt-1 text-ui-md text-muted">
-              Load a schemaVersion 1 extension catalog. Installed marketplace entries are stored locally in this demo.
-            </p>
-          </div>
-          <button
-            type="button"
-            className={toolbarButtonClass}
-            disabled={catalogLoading || !config.extensionCatalogURL.trim()}
-            onClick={loadMarketplaceCatalog}
-          >
-            {catalogLoading ? 'Loading...' : 'Load URL'}
-          </button>
-        </div>
-        <div className="mt-4 grid gap-3">
-          <TextField
-            label="Catalog URL"
-            value={config.extensionCatalogURL}
-            placeholder="https://example.com/rebook-extension-catalog.json"
-            onChange={value => setConfig({ ...config, extensionCatalogURL: value })}
-          />
-          <TextAreaField
-            label="Catalog JSON"
-            value={config.extensionCatalogJSON}
-            placeholder='{"schemaVersion":1,"source":"marketplace","entries":[...]}'
-            onChange={value => setConfig({ ...config, extensionCatalogJSON: value })}
-          />
-          <p className={[
-            'text-ui-sm',
-            marketplaceCatalog.error || catalogStatus.startsWith('Catalog load failed')
-              ? 'text-danger'
-              : 'text-muted',
-          ].join(' ')}>
-            {marketplaceCatalog.error || catalogStatus || `${marketplaceCatalog.entries.length} marketplace extension(s) loaded.`}
-          </p>
-        </div>
-      </section>
-      {extensionItems.map(item => {
-        const state = getDemoExtensionState(item, config)
-        const contributionBadges = getDemoExtensionContributionBadges(item.manifest)
-        const runtimeStatus = extensionRuntimeStatus[item.manifest.id]
-        return (
-          <article key={item.manifest.id} className="rounded-xl border border-line bg-surface p-4">
-            <div className="flex flex-col items-stretch gap-4 sm:flex-row sm:items-start">
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-ui-md font-semibold text-ink">
-                    {item.manifest.displayName || item.manifest.name}
-                  </h3>
-                  <span className="rounded-full bg-surface-muted px-2 py-0.5 text-ui-sm font-medium text-muted">
-                    {item.source || 'local'}
-                  </span>
-                  <span className={[
-                    'rounded-full px-2 py-0.5 text-ui-sm font-medium',
-                    !state.installed
-                      ? 'bg-surface-muted text-muted'
-                      : state.enabled
-                      ? state.configured ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
-                      : 'bg-surface-muted text-muted',
-                  ].join(' ')}>
-                    {!state.installed ? 'Available' : state.enabled ? state.configured ? 'Enabled' : 'Needs setup' : 'Disabled'}
-                  </span>
-                </div>
-                <p className="mt-1 max-w-2xl text-ui-md text-muted">{item.manifest.description}</p>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {item.manifest.capabilities?.map(capability => (
-                    <span key={capability} className="rounded-lg bg-accent-soft px-1.5 py-0.5 text-ui-xs font-medium text-accent-text">
-                      {capability}
-                    </span>
-                  ))}
-                </div>
-                {contributionBadges.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {contributionBadges.map(badge => (
-                      <span key={badge} className="rounded-lg bg-surface-muted px-1.5 py-0.5 text-ui-xs font-medium text-muted">
-                        {badge}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                <p className="mt-3 text-ui-sm text-muted">{state.message}</p>
-                {state.installed && !isDemoExtensionFeatureControlled(item.manifest) ? (
-                  <p className={[
-                    'mt-2 text-ui-sm',
-                    runtimeStatus?.state === 'loaded'
-                      ? 'text-success'
-                      : runtimeStatus?.state === 'error'
-                      ? 'text-danger'
-                      : 'text-muted',
-                  ].join(' ')}>
-                    {runtimeStatus?.message || 'Enable this extension to load its runtime module.'}
-                  </p>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                {state.installed ? (
-                  <>
-                    <button
-                      type="button"
-                      className={toolbarButtonClass}
-                      onClick={() => setSection(state.settingsSection)}
-                    >
-                      Configure
-                    </button>
-                    <label className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-ui-md font-medium text-ink-soft">
-                      <span>{state.enabled ? 'On' : 'Off'}</span>
-                      <Toggle
-                        checked={state.enabled}
-                        ariaLabel={`Toggle ${item.manifest.displayName || item.manifest.name}`}
-                        onChange={value => setConfig(setDemoExtensionEnabled(config, item.manifest, value))}
-                      />
-                    </label>
-                    {item.source !== 'builtin' ? (
-                      <button
-                        type="button"
-                        className={toolbarButtonClass}
-                        onClick={() => setConfig(uninstallDemoExtension(config, item.manifest))}
-                      >
-                        Uninstall
-                      </button>
-                    ) : null}
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className={primaryButtonClass}
-                    onClick={() => setConfig(installDemoExtension(config, item.manifest))}
-                  >
-                    Install
-                  </button>
-                )}
-              </div>
-            </div>
-          </article>
-        )
-      })}
-    </div>
-  )
-}
-
 function Footer({
   ttsEnabled,
   ttsStatus,
@@ -4500,30 +4389,6 @@ function Footer({
       </button>
       <button className={toolbarButtonClass} type="button" onClick={onStopTTS}>{t('reader.stop')}</button>
     </footer>
-  )
-}
-
-function TextField({ label, value, onChange, type = 'text', placeholder }: { label: string; value: string; onChange(value: string): void; type?: string; placeholder?: string }) {
-  return (
-    <label className="grid gap-1">
-      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
-      <input className={inputClass} type={type} value={value} placeholder={placeholder} onChange={event => onChange(event.target.value)} />
-    </label>
-  )
-}
-
-function TextAreaField({ label, value, onChange, placeholder }: { label: string; value: string; onChange(value: string): void; placeholder?: string }) {
-  return (
-    <label className="grid gap-1">
-      <span className="text-ui-sm font-medium uppercase tracking-wide text-muted">{label}</span>
-      <textarea
-        className={`${inputClass} min-h-36 resize-y font-mono text-ui-sm`}
-        value={value}
-        placeholder={placeholder}
-        spellCheck={false}
-        onChange={event => onChange(event.target.value)}
-      />
-    </label>
   )
 }
 
@@ -4709,6 +4574,11 @@ function ProgressBar({ value }: { value: number }) {
   )
 }
 
+function getChangedConfigKeys(previous: DemoConfig, next: DemoConfig): Array<keyof DemoConfig> {
+  return (Object.keys(next) as Array<keyof DemoConfig>)
+    .filter(key => !Object.is(previous[key], next[key]))
+}
+
 export function loadReaderConfig(): DemoConfig {
   try {
     return normalizeConfig(JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}'))
@@ -4721,97 +4591,19 @@ export function saveReaderConfig(config: DemoConfig) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(normalizeConfig(config)))
 }
 
-function getDemoExtensionState(item: RebookExtensionCatalogItem, config: DemoConfig): {
-  installed: boolean
-  enabled: boolean
-  configured: boolean
-  message: string
-  settingsSection: SettingsSection
-} {
-  const { manifest } = item
-  const featureControlled = isDemoExtensionFeatureControlled(manifest)
-  const featureEnabled = featureControlled
-    ? isDemoExtensionFeatureEnabled(manifest, config)
-    : item.enabled
-  const installed = item.installed || featureEnabled
-  const enabled = installed && featureEnabled
-  switch (manifest.id) {
-    case TRANSLATION_EXTENSION_ID:
-      const browserProvider = config.translationProvider === 'browser'
-      const translationConfigured = browserProvider ? isBrowserTranslationSupported() : Boolean(config.apiKey.trim())
-      return {
-        installed,
-        enabled,
-        configured: translationConfigured,
-        message: browserProvider
-          ? isBrowserTranslationSupported()
-            ? 'Uses the browser built-in translation model.'
-            : 'Built-in translation is not supported by this browser.'
-          : config.apiKey.trim()
-            ? `Uses AI translation in ${config.translateMode} mode.`
-            : 'Requires a translation API key and model settings.',
-        settingsSection: 'translation',
-      }
-    case PROFESSIONAL_TRANSLATION_EXTENSION_ID:
-      return {
-        installed,
-        enabled,
-        configured: Boolean(config.professionalServiceBaseUrl.trim() && config.professionalBookId.trim()),
-        message: config.professionalServiceBaseUrl.trim() && config.professionalBookId.trim()
-          ? 'Uses rebook-service professional translation workflow.'
-          : 'Requires service URL and book ID.',
-        settingsSection: 'translation',
-      }
-    case TTS_EXTENSION_ID:
-      return {
-        installed,
-        enabled,
-        configured: true,
-        message: config.ttsMultiSpeaker ? 'Multi-voice TTS is enabled.' : 'Single voice TTS is enabled.',
-        settingsSection: 'tts',
-      }
-    case AI_CHAT_EXTENSION_ID:
-      return {
-        installed,
-        enabled,
-        configured: Boolean(config.chatAPIKey.trim()),
-        message: config.chatAPIKey.trim()
-          ? 'AI chat can search, read, cite, and rewrite the current book.'
-          : 'Requires an AI chat API key and model settings.',
-        settingsSection: 'chat',
-      }
-    default:
-      return {
-        installed,
-        enabled,
-        configured: true,
-        message: 'This marketplace extension is tracked by the demo installer; runtime loading will be handled by a future extension host bridge.',
-        settingsSection: 'extensions',
-      }
-  }
-}
-
-function getDemoExtensionContributionBadges(manifest: RebookExtensionManifest): string[] {
-  const contributes = manifest.contributes
-  const badges: string[] = []
-  const commands = contributes?.commands?.length ?? 0
-  const panels = contributes?.panels?.length ?? 0
-  const settings = Object.keys(contributes?.settings ?? {}).length
-  const tools = contributes?.tools?.length ?? 0
-  if (commands) badges.push(`${commands} command${commands === 1 ? '' : 's'}`)
-  if (panels) badges.push(`${panels} panel${panels === 1 ? '' : 's'}`)
-  if (settings) badges.push(`${settings} setting${settings === 1 ? '' : 's'}`)
-  if (tools) badges.push(`${tools} tool${tools === 1 ? '' : 's'}`)
-  return badges
-}
-
 function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
   const {
     trial: _legacyTrial,
     trialPages: _legacyTrialPages,
     theme: _legacyReaderTheme,
+    fixedPainter: _legacyFixedPainter,
     ...supportedValue
-  } = value as Partial<DemoConfig> & { trial?: unknown; trialPages?: unknown; theme?: unknown }
+  } = value as Partial<DemoConfig> & {
+    trial?: unknown
+    trialPages?: unknown
+    theme?: unknown
+    fixedPainter?: unknown
+  }
   const translationProvider = normalizeTranslationProvider(
     supportedValue.translationProvider,
     typeof supportedValue.apiKey === 'string' && supportedValue.apiKey.trim() ? 'ai' : 'browser',
@@ -5006,62 +4798,6 @@ function extensionInstallationsToRecord(installations: readonly RebookExtensionI
   return Object.fromEntries(installations.map(installation => [installation.id, installation]))
 }
 
-function installDemoExtension(config: DemoConfig, manifest: RebookExtensionManifest): DemoConfig {
-  return setDemoExtensionEnabled(config, manifest, true)
-}
-
-function uninstallDemoExtension(config: DemoConfig, manifest: RebookExtensionManifest): DemoConfig {
-  const manager = createDemoExtensionManager(config)
-  manager.uninstall(manifest.id)
-  return setDemoExtensionFeatureEnabled(createDemoConfigWithExtensionManager(config, manager), manifest, false)
-}
-
-function setDemoExtensionEnabled(
-  config: DemoConfig,
-  manifest: RebookExtensionManifest,
-  enabled: boolean,
-): DemoConfig {
-  const manager = createDemoExtensionManager(config)
-  if (manager.isInstalled(manifest.id)) {
-    manager.setEnabled(manifest.id, enabled)
-  } else {
-    manager.install(manifest.id, { enabled })
-  }
-  if (enabled && manifest.id === TRANSLATION_EXTENSION_ID && manager.isInstalled(PROFESSIONAL_TRANSLATION_EXTENSION_ID)) {
-    manager.disable(PROFESSIONAL_TRANSLATION_EXTENSION_ID)
-  }
-  if (enabled && manifest.id === PROFESSIONAL_TRANSLATION_EXTENSION_ID && manager.isInstalled(TRANSLATION_EXTENSION_ID)) {
-    manager.disable(TRANSLATION_EXTENSION_ID)
-  }
-  return setDemoExtensionFeatureEnabled(createDemoConfigWithExtensionManager(config, manager), manifest, enabled)
-}
-
-function setDemoExtensionFeatureEnabled(
-  config: DemoConfig,
-  manifest: RebookExtensionManifest,
-  enabled: boolean,
-): DemoConfig {
-  switch (manifest.id) {
-    case TRANSLATION_EXTENSION_ID:
-      return enabled
-        ? { ...config, translate: true, professionalTranslation: false }
-        : config.professionalTranslation
-          ? config
-          : { ...config, translate: false }
-    case PROFESSIONAL_TRANSLATION_EXTENSION_ID:
-      return enabled
-        ? { ...config, translate: true, professionalTranslation: true }
-        : config.professionalTranslation
-          ? { ...config, translate: false, professionalTranslation: false }
-          : config
-    case TTS_EXTENSION_ID:
-      return { ...config, tts: enabled }
-    case AI_CHAT_EXTENSION_ID:
-      return { ...config, chat: enabled }
-    default:
-      return config
-  }
-}
 
 function createRebookApiUrl(serviceBaseUrl: string, path: string): string {
   const base = serviceBaseUrl.trim().replace(/\/+$/, '')

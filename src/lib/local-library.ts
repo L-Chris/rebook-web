@@ -17,6 +17,8 @@ const DATABASE_VERSION = 1
 const BOOK_STORE = 'books'
 const LOCAL_BOOK_PREFIX = 'local-'
 
+export type LocalBookSyncState = 'local' | 'queued' | 'syncing' | 'synced' | 'failed'
+
 type LocalBookRecord = {
   id: string
   title: string
@@ -33,6 +35,14 @@ type LocalBookRecord = {
   mimeType: string
   file: Blob
   cover?: Blob | null
+  contentHash?: string | null
+  syncState?: LocalBookSyncState
+  cloudAccountId?: string | null
+  serverBookId?: string | null
+  cloudDriveItemId?: string | null
+  lastSyncAt?: string | null
+  retryCount?: number
+  lastSyncError?: string | null
 }
 
 export type LocalBook = {
@@ -44,6 +54,15 @@ export type LocalBookMetadata = {
   title: string
   author: string | null
   cover: Blob | null
+}
+
+export type LocalBookSyncCandidate = {
+  id: string
+  file: File
+  syncState: LocalBookSyncState
+  cloudAccountId: string | null
+  serverBookId: string | null
+  retryCount: number
 }
 
 registerBuiltInParsers(registry)
@@ -78,6 +97,7 @@ export async function importLocalBook(file: File): Promise<ShelfItem> {
     cover: metadata.cover,
   }
   await putRecord(record)
+  window.dispatchEvent(new Event('rebook:local-book-imported'))
   return toShelfItem(record)
 }
 
@@ -89,7 +109,14 @@ export async function listLocalBooks(query = ''): Promise<ShelfItem[]> {
       || record.title.toLocaleLowerCase().includes(needle)
       || record.author?.toLocaleLowerCase().includes(needle))
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-  return Promise.all(filtered.map(toShelfItem))
+  return Promise.all(filtered.map(async record => {
+    const cover = await normalizeImageBlob(record.cover)
+    if (cover !== record.cover) {
+      record.cover = cover
+      await putRecord(record)
+    }
+    return toShelfItem(record)
+  }))
 }
 
 export async function getLocalBook(id: string): Promise<LocalBook | null> {
@@ -134,6 +161,62 @@ export async function removeLocalBook(id: string) {
   await transactionPromise(database, 'readwrite', store => store.delete(id))
 }
 
+export async function listLocalBooksForSync(
+  accountId: string,
+): Promise<LocalBookSyncCandidate[]> {
+  const records = await getAllRecords()
+  return records
+    .filter(record => record.serverBookId == null || record.cloudAccountId !== accountId)
+    .sort((a, b) => Date.parse(a.addedAt) - Date.parse(b.addedAt))
+    .map(record => ({
+      id: record.id,
+      file: new File([record.file], record.fileName, { type: record.mimeType }),
+      syncState: record.syncState || 'local',
+      cloudAccountId: record.cloudAccountId || null,
+      serverBookId: record.serverBookId || null,
+      retryCount: record.retryCount || 0,
+    }))
+}
+
+export async function getLocalLibrarySyncSummary() {
+  const records = await getAllRecords()
+  return {
+    total: records.length,
+    localOnly: records.filter(record => !record.serverBookId).length,
+    pending: records.filter(record => ['queued', 'syncing'].includes(record.syncState || 'local')).length,
+    failed: records.filter(record => record.syncState === 'failed').length,
+  }
+}
+
+export async function getSyncedServerBookIds() {
+  const records = await getAllRecords()
+  return new Set(records.flatMap(record => record.serverBookId ? [record.serverBookId] : []))
+}
+
+export async function updateLocalBookSync(
+  id: string,
+  update: {
+    syncState: LocalBookSyncState
+    cloudAccountId?: string | null
+    serverBookId?: string | null
+    cloudDriveItemId?: string | null
+    lastSyncError?: string | null
+    retryCount?: number
+  },
+) {
+  const record = await getRecord(id)
+  if (!record) return
+  record.syncState = update.syncState
+  if (update.cloudAccountId !== undefined) record.cloudAccountId = update.cloudAccountId
+  if (update.serverBookId !== undefined) record.serverBookId = update.serverBookId
+  if (update.cloudDriveItemId !== undefined) record.cloudDriveItemId = update.cloudDriveItemId
+  if (update.lastSyncError !== undefined) record.lastSyncError = update.lastSyncError
+  if (update.retryCount !== undefined) record.retryCount = update.retryCount
+  if (update.syncState === 'synced') record.lastSyncAt = new Date().toISOString()
+  await putRecord(record)
+  window.dispatchEvent(new Event('rebook:local-library-changed'))
+}
+
 async function toShelfItem(record: LocalBookRecord): Promise<ShelfItem> {
   return {
     id: record.id,
@@ -152,7 +235,9 @@ async function toShelfItem(record: LocalBookRecord): Promise<ShelfItem> {
     coverUrl: record.cover ? await blobToDataUrl(record.cover) : null,
     fileName: record.fileName,
     fileSize: record.fileSize,
-    storageProvider: 'local',
+    storageProvider: record.syncState === 'synced' ? 'webdav' : 'local',
+    syncState: record.syncState || 'local',
+    serverBookId: record.serverBookId || null,
   }
 }
 
@@ -182,7 +267,7 @@ export async function extractBookCover(book: Book): Promise<Blob | null> {
   if (book.getCover) {
     try {
       const cover = await book.getCover()
-      if (cover) return cover
+      if (cover) return await normalizeImageBlob(cover)
     } catch {
       // Fixed-layout formats can still provide a rendered first-page cover.
     }
@@ -234,6 +319,28 @@ function blobToDataUrl(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error || new Error('无法读取封面'))
     reader.readAsDataURL(blob)
   })
+}
+
+async function normalizeImageBlob(blob?: Blob | null): Promise<Blob | null> {
+  if (!blob || blob.type.startsWith('image/')) return blob || null
+  const bytes = new Uint8Array(await blob.slice(0, 256).arrayBuffer())
+  const type = detectImageMimeType(bytes)
+  return type ? new Blob([blob], { type }) : blob
+}
+
+function detectImageMimeType(bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  if (
+    bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+  ) return 'image/png'
+  const signature = new TextDecoder().decode(bytes)
+  if (signature.startsWith('GIF87a') || signature.startsWith('GIF89a')) return 'image/gif'
+  if (signature.startsWith('RIFF') && signature.slice(8, 12) === 'WEBP') return 'image/webp'
+  if (/^\s*(?:<\?xml[^>]*>\s*)?<svg[\s>]/i.test(signature)) return 'image/svg+xml'
+  return null
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob | null> {

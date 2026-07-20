@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft,
   CheckCircle2,
   Cloud,
   FileText,
@@ -15,21 +14,16 @@ import {
   type CloudDriveAccount,
   type CloudDriveItem,
   type ImportJob,
+  type SyncJob,
 } from '../../lib/api'
 import { inputClass, primaryButtonClass, toolbarButtonClass } from '../../lib/ui-classes'
+import { useAuth } from '../auth/AuthContext'
 import { useI18n, type Translate } from '../i18n/LanguageContext'
 
-type SyncJob = {
-  id: string
-  status: string
-  totalItems: number
-  processedItems: number
-  errorMessage: string | null
-}
-
-export function CloudDrivePage() {
+export function CloudDriveSettings() {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const auth = useAuth()
   const uploadInput = useRef<HTMLInputElement>(null)
   const [accounts, setAccounts] = useState<CloudDriveAccount[]>([])
   const [activeId, setActiveId] = useState('')
@@ -60,6 +54,12 @@ export function CloudDrivePage() {
   }, [])
 
   const loadAccounts = useCallback(async () => {
+    if (!auth.user) {
+      setAccounts([])
+      setItems([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const result = await apiRequest<{ items: CloudDriveAccount[] }>('/cloud-drive/accounts')
@@ -75,11 +75,11 @@ export function CloudDrivePage() {
     } finally {
       setLoading(false)
     }
-  }, [activeId, loadItems, t])
+  }, [activeId, auth.user, loadItems, t])
 
   useEffect(() => {
     void loadAccounts()
-  }, [])
+  }, [auth.user?.id])
 
   const connect = async () => {
     setBusy('connect')
@@ -94,6 +94,7 @@ export function CloudDrivePage() {
       setMessage(t('cloud.connectedNotice'))
       setActiveId(account.id)
       await loadAccounts()
+      window.dispatchEvent(new Event('rebook:cloud-accounts-changed'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('cloud.connectFailed'))
     } finally {
@@ -114,6 +115,7 @@ export function CloudDrivePage() {
       const completed = await waitForSync(job.id, setMessage, t)
       setMessage(t('cloud.syncCompleted', { count: completed.totalItems }))
       await loadItems(activeAccount.id)
+      window.dispatchEvent(new Event('rebook:cloud-sync-completed'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('cloud.syncFailed'))
       setMessage('')
@@ -136,9 +138,7 @@ export function CloudDrivePage() {
           ? result
           : await waitForImport(result.id, setMessage, t)
       await loadItems(item.accountId)
-      if (completed.bookId) {
-        navigate(`/reader/${completed.bookId}`)
-      }
+      if (completed.bookId) window.dispatchEvent(new Event('rebook:cloud-sync-completed'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('cloud.importFailed'))
       setMessage('')
@@ -163,7 +163,7 @@ export function CloudDrivePage() {
       )
       const completed = await waitForImport(job.id, setMessage, t)
       await loadItems(activeAccount.id)
-      if (completed.bookId) navigate(`/reader/${completed.bookId}`)
+      if (completed.bookId) window.dispatchEvent(new Event('rebook:cloud-sync-completed'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('cloud.uploadFailed'))
       setMessage('')
@@ -183,6 +183,7 @@ export function CloudDrivePage() {
       setMessage(t('cloud.unbound'))
       setActiveId('')
       await loadAccounts()
+      window.dispatchEvent(new Event('rebook:cloud-accounts-changed'))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('cloud.unbindFailed'))
     } finally {
@@ -191,31 +192,38 @@ export function CloudDrivePage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-7 md:px-7 md:py-10">
-      <button className="inline-flex items-center gap-2 text-ui-md text-muted transition-colors duration-150 hover:text-ink" onClick={() => navigate('/')}>
-        <ArrowLeft className="h-4 w-4" />
-        {t('common.backToShelf')}
-      </button>
-      <div className="mt-5">
-        <p className="text-ui-sm font-medium tracking-wide text-accent-text">CLOUD STORAGE</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink">WebDAV</h1>
-        <p className="mt-2 text-ui-md text-muted">{t('cloud.description')}</p>
-      </div>
+    <div className="space-y-5 p-5 sm:p-7">
+      <p className="m-0 text-ui-sm leading-relaxed text-muted">{t('cloud.description')}</p>
 
-      {(message || error) ? (
-        <div className={`mt-6 rounded-xl border px-4 py-3 text-ui-md ${
+      {!auth.user ? (
+        <section className="rounded-xl border border-line bg-surface px-5 py-10 text-center">
+          <Cloud className="mx-auto h-8 w-8 text-muted" />
+          <h3 className="mt-4 text-ui-lg font-semibold text-ink">{t('cloud.signInTitle')}</h3>
+          <p className="mt-2 text-ui-md text-muted">{t('cloud.signInDescription')}</p>
+          <button
+            className={`${primaryButtonClass} mt-5`}
+            type="button"
+            onClick={() => navigate('/login', { state: { from: window.location.pathname } })}
+          >
+            {t('common.signIn')}
+          </button>
+        </section>
+      ) : null}
+
+      {auth.user && (message || error) ? (
+        <div className={`rounded-xl border px-4 py-3 text-ui-md ${
           error ? 'border-danger-line bg-danger-soft text-danger' : 'border-success-line bg-success-soft text-success'
         }`}>
           {error || message}
         </div>
       ) : null}
 
-      {loading ? (
+      {auth.user && loading ? (
         <div className="grid min-h-80 place-items-center text-accent-text">
           <Loader2 className="h-7 w-7 animate-spin" />
         </div>
-      ) : (
-        <div className="mt-7 space-y-6">
+      ) : auth.user ? (
+        <div className="space-y-5">
           <section className="overflow-hidden rounded-xl border border-line bg-surface">
             <div className="flex flex-col gap-4 border-b border-line p-5 md:flex-row md:items-center md:justify-between">
               <div className="flex items-center gap-3">
@@ -304,14 +312,16 @@ export function CloudDrivePage() {
                       <span className="hidden rounded-full bg-surface-muted px-2 py-1 text-ui-sm text-muted sm:inline">
                         {statusLabel(item.syncStatus, t)}
                       </span>
-                      <button
-                        className={primaryButtonClass}
-                        disabled={item.syncStatus === 'unsupported' || busy === `import:${item.id}`}
-                        onClick={() => void importItem(item)}
-                      >
-                        {busy === `import:${item.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        {item.bookId ? t('common.open') : t('common.import')}
-                      </button>
+                      {!item.bookId && item.syncStatus !== 'unsupported' ? (
+                        <button
+                          className={primaryButtonClass}
+                          disabled={busy === `import:${item.id}`}
+                          onClick={() => void importItem(item)}
+                        >
+                          {busy === `import:${item.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                          {t('common.import')}
+                        </button>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -323,7 +333,7 @@ export function CloudDrivePage() {
             </section>
           ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

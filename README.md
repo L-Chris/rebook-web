@@ -2,6 +2,12 @@
 
 基于 `rebook` demo 完整能力构建的 React 19 Web 阅读器。
 
+<p align="center">
+  <a href="https://linux.do" aria-label="LINUX DO">
+    <img src="https://img.shields.io/badge/LINUX-DO-FFB003.svg" alt="LINUX DO">
+  </a>
+</p>
+
 ## 技术栈
 
 - React 19

@@ -41,6 +41,8 @@ export type ShelfItem = {
   fileName: string | null
   fileSize: number | null
   storageProvider: string | null
+  syncState?: 'local' | 'queued' | 'syncing' | 'synced' | 'failed'
+  serverBookId?: string | null
 }
 
 export type ShelfList = {
@@ -91,6 +93,14 @@ export type CloudDriveItem = {
   providerUpdatedAt: string | null
   syncStatus: string
   bookId: string | null
+}
+
+export type SyncJob = {
+  id: string
+  status: string
+  totalItems: number
+  processedItems: number
+  errorMessage: string | null
 }
 
 export function setCsrfToken(value?: string | null) {

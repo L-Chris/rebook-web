@@ -1,4 +1,4 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
 import {
   ForgotPasswordPage,
@@ -7,7 +7,7 @@ import {
   ResetPasswordPage,
   VerifyEmailPage,
 } from './features/auth/AuthPages'
-import { CloudDrivePage } from './features/cloud-drive/CloudDrivePage'
+import { CloudSyncProvider } from './features/cloud-sync/CloudSyncContext'
 import { ExtensionStorePage } from './features/extensions/ExtensionStorePage'
 import { LanguageProvider, useI18n } from './features/i18n/LanguageContext'
 import ReaderWorkspace from './features/reader/ReaderWorkspace'
@@ -19,10 +19,10 @@ export default function App() {
     <ThemeProvider>
       <LanguageProvider>
         <AuthProvider>
-          <Routes>
+          <CloudSyncProvider>
+            <Routes>
             <Route path="/" element={<ShelfPage />} />
             <Route path="/extensions" element={<ExtensionStorePage />} />
-            <Route path="/settings" element={<ShelfPage initialSettingsOpen />} />
             <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
             <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
@@ -30,41 +30,19 @@ export default function App() {
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/reader" element={<Navigate to="/" replace />} />
             <Route path="/reader/:bookId" element={<ShelfReaderPage />} />
-            <Route element={<ProtectedRoute />}>
-              <Route element={<LibraryLayout />}>
-                <Route path="/settings/cloud-drives" element={<CloudDrivePage />} />
-              </Route>
-            </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+            </Routes>
+          </CloudSyncProvider>
         </AuthProvider>
       </LanguageProvider>
     </ThemeProvider>
   )
 }
 
-function ProtectedRoute() {
-  const { user, loading } = useAuth()
-  const location = useLocation()
-  if (loading) return <FullPageLoading />
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />
-  }
-  return <Outlet />
-}
-
 function GuestOnly({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return <FullPageLoading />
   return user ? <Navigate to="/" replace /> : children
-}
-
-function LibraryLayout() {
-  return (
-    <div className="h-full overflow-y-auto bg-bg">
-      <Outlet />
-    </div>
-  )
 }
 
 function ShelfReaderPage() {
