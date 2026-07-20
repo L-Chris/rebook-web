@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
 import {
   ForgotPasswordPage,
@@ -9,6 +9,7 @@ import {
 } from './features/auth/AuthPages'
 import { CloudSyncProvider } from './features/cloud-sync/CloudSyncContext'
 import { ExtensionStorePage } from './features/extensions/ExtensionStorePage'
+import { ExtensionPublisherPage } from './features/extensions/ExtensionPublisherPage'
 import { LanguageProvider, useI18n } from './features/i18n/LanguageContext'
 import ReaderWorkspace from './features/reader/ReaderWorkspace'
 import { ShelfPage } from './features/shelf/ShelfPage'
@@ -23,6 +24,7 @@ export default function App() {
             <Routes>
             <Route path="/" element={<ShelfPage />} />
             <Route path="/extensions" element={<ExtensionStorePage />} />
+            <Route path="/extensions/publish" element={<ProtectedRoute><ExtensionPublisherPage /></ProtectedRoute>} />
             <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
             <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
@@ -43,6 +45,14 @@ function GuestOnly({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return <FullPageLoading />
   return user ? <Navigate to="/" replace /> : children
+}
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading) return <FullPageLoading />
+  if (user) return children
+  return <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}` }} />
 }
 
 function ShelfReaderPage() {

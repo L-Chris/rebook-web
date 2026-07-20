@@ -1,4 +1,4 @@
-import { useMemo, useState, type ComponentType } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -12,6 +12,7 @@ import {
   Languages,
   Loader2,
   Package,
+  PackagePlus,
   Power,
   Search,
   Settings2,
@@ -23,12 +24,14 @@ import {
 import {
   AI_CHAT_EXTENSION_ID,
   PROFESSIONAL_TRANSLATION_EXTENSION_ID,
+  REBOOK_EXTENSION_HOST_API_VERSION,
   TRANSLATION_EXTENSION_ID,
   TTS_EXTENSION_ID,
   type RebookExtensionCatalogItem,
 } from 'rebook'
 import {
   installMarketplaceExtension,
+  fetchExtensionMarketplaceCatalogJSON,
   listExtensionMarketplaceItems,
   loadExtensionMarketplaceState,
   parseExtensionMarketplaceCatalog,
@@ -89,6 +92,7 @@ export function ExtensionStorePage() {
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const initialCatalogLoadStarted = useRef(false)
 
   const catalogResult = useMemo(() => parseExtensionMarketplaceCatalog(state), [state])
   const items = useMemo(() => listExtensionMarketplaceItems(state), [state])
@@ -125,11 +129,30 @@ export function ExtensionStorePage() {
   }
 
   const install = (item: RebookExtensionCatalogItem) => {
-    commit(installMarketplaceExtension(state, item.manifest.id), t('store.installedNotice', { title: extensionTitle(item, t) }))
+    if (!canExecuteExtension(item)) {
+      setNotice('')
+      setError(t('store.notExecutable'))
+      return
+    }
+    const updating = item.installed && item.installation?.version !== item.manifest.version
+    if (updating && !window.confirm(t('store.updateConfirm', {
+      title: extensionTitle(item, t),
+      version: item.manifest.version,
+      permissions: formatExtensionPermissions(item, t),
+    }))) return
+    commit(
+      installMarketplaceExtension(state, item.manifest.id),
+      t(updating ? 'store.updatedNotice' : 'store.installedNotice', { title: extensionTitle(item, t) }),
+    )
   }
 
   const toggle = (item: RebookExtensionCatalogItem) => {
     const enabled = !item.enabled
+    if (enabled && !canExecuteExtension(item)) {
+      setNotice('')
+      setError(t('store.notExecutable'))
+      return
+    }
     commit(
       setMarketplaceExtensionEnabled(state, item.manifest.id, enabled),
       t(enabled ? 'store.enabledNotice' : 'store.disabledNotice', { title: extensionTitle(item, t) }),
@@ -152,9 +175,7 @@ export function ExtensionStorePage() {
     setError('')
     setNotice('')
     try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(t('store.catalogRequestFailed', { status: response.status }))
-      const text = await response.text()
+      const text = await fetchExtensionMarketplaceCatalogJSON(url)
       const next = { ...state, extensionCatalogJSON: text }
       const parsed = parseExtensionMarketplaceCatalog(next)
       if (parsed.error) throw new Error(parsed.error)
@@ -165,6 +186,12 @@ export function ExtensionStorePage() {
       setCatalogLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (initialCatalogLoadStarted.current) return
+    initialCatalogLoadStarted.current = true
+    void loadCatalog()
+  }, [])
 
   return (
     <main className="h-full overflow-y-auto bg-bg text-ink">
@@ -191,6 +218,14 @@ export function ExtensionStorePage() {
               </button>
             ) : null}
           </label>
+          <button
+            className={toolbarButtonClass}
+            type="button"
+            onClick={() => navigate('/extensions/publish')}
+          >
+            <PackagePlus className="h-4 w-4" />
+            <span className="hidden sm:inline">{t('publisher.publishAction')}</span>
+          </button>
           <button
             className={toolbarButtonClass}
             type="button"
@@ -342,6 +377,9 @@ function ExtensionCard({
   const metadata = builtInMetadata[item.manifest.id]
   const Icon = metadata?.icon || extensionIcon(item)
   const title = extensionTitle(item, t)
+  const executable = canExecuteExtension(item)
+  const sandboxed = item.manifest.runtime?.kind === 'worker' || item.manifest.runtime?.kind === 'iframe'
+  const updateAvailable = item.installed && item.source !== 'builtin' && item.installation?.version !== item.manifest.version
   return (
     <article className="group flex min-h-64 flex-col rounded-xl border border-line bg-surface p-5 transition duration-150 hover:-translate-y-0.5 hover:border-line-strong hover:shadow-menu">
       <div className="flex items-start gap-3">
@@ -352,6 +390,7 @@ function ExtensionCard({
           <div className="flex flex-wrap items-center gap-1.5">
             <h2 className="truncate text-ui-xl font-semibold">{title}</h2>
             {item.verified ? <BadgeCheck className="h-4 w-4 shrink-0 text-accent-text" aria-label={t('store.verified')} /> : null}
+            {sandboxed ? <span className="rounded-full bg-surface-muted px-2 py-0.5 text-ui-xs font-medium text-muted">{t('store.sandboxed')}</span> : null}
           </div>
           <p className="mt-0.5 text-ui-sm text-muted">
             {item.manifest.publisher || 'Unknown'} · v{item.manifest.version}
@@ -364,7 +403,13 @@ function ExtensionCard({
               ? 'bg-surface-muted text-muted'
               : 'bg-accent-soft text-accent-text'
         }`}>
-          {item.enabled ? t('store.enabled') : item.installed ? t('store.disabled') : t('store.available')}
+          {updateAvailable
+            ? t('store.updateAvailable')
+            : item.enabled
+              ? t('store.enabled')
+              : item.installed
+                ? t('store.disabled')
+                : executable ? t('store.available') : t('store.reviewRequired')}
         </span>
       </div>
 
@@ -381,12 +426,21 @@ function ExtensionCard({
         <span className="rounded-md bg-surface-muted px-2 py-1 text-ui-xs font-medium text-muted">
           {item.source === 'builtin' ? t('store.builtIn') : t('store.marketplace')}
         </span>
+        <span className="rounded-md bg-surface-muted px-2 py-1 text-ui-xs font-medium text-muted">
+          {t('store.permissions', { permissions: formatExtensionPermissions(item, t) })}
+        </span>
       </div>
 
       <div className="mt-auto flex items-center gap-2 pt-5">
         {item.installed ? (
           <>
-            <button className={item.enabled ? toolbarButtonClass : primaryButtonClass} type="button" onClick={onToggle}>
+            {updateAvailable ? (
+              <button className={primaryButtonClass} type="button" disabled={!executable} onClick={onInstall}>
+                <Package className="h-4 w-4" />
+                {t('common.update')}
+              </button>
+            ) : null}
+            <button className={item.enabled ? toolbarButtonClass : primaryButtonClass} type="button" disabled={!item.enabled && !executable} title={!executable ? t('store.notExecutable') : undefined} onClick={onToggle}>
               <Power className="h-4 w-4" />
               {item.enabled ? t('common.disable') : t('common.enable')}
             </button>
@@ -398,7 +452,7 @@ function ExtensionCard({
             ) : null}
           </>
         ) : (
-          <button className={primaryButtonClass} type="button" onClick={onInstall}>
+          <button className={primaryButtonClass} type="button" disabled={!executable} title={!executable ? t('store.notExecutable') : undefined} onClick={onInstall}>
             {t('common.install')}
           </button>
         )}
@@ -418,6 +472,15 @@ function ExtensionCard({
   )
 }
 
+function canExecuteExtension(item: RebookExtensionCatalogItem): boolean {
+  if (item.source === 'builtin' || item.trust === 'builtin') return true
+  if (item.manifest.engines?.hostApi !== String(REBOOK_EXTENSION_HOST_API_VERSION)) return false
+  if (!item.artifact) return false
+  const runtime = item.manifest.runtime?.kind
+  if (runtime === 'worker' || runtime === 'iframe') return true
+  return runtime === 'trusted' && item.trust === 'verified' && item.verified === true
+}
+
 function extensionTitle(item: RebookExtensionCatalogItem, t: Translate): string {
   const metadata = builtInMetadata[item.manifest.id]
   return (metadata ? t(metadata.titleKey) : '') || item.manifest.displayName || item.manifest.name
@@ -430,6 +493,12 @@ function extensionIcon(item: RebookExtensionCatalogItem): ExtensionIcon {
   if (categories.includes('ai')) return Bot
   if (categories.includes('reader')) return BookOpen
   return Blocks
+}
+
+function formatExtensionPermissions(item: RebookExtensionCatalogItem, t: Translate): string {
+  return item.manifest.permissions?.length
+    ? item.manifest.permissions.join(', ')
+    : t('store.noPermissions')
 }
 
 function categoryLabel(category: string, t: Translate): string {

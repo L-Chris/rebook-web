@@ -12,11 +12,14 @@ import {
   type RebookExtensionCatalogItem,
   type RebookExtensionInstallation,
 } from 'rebook'
+import { apiUrl } from './api'
 
 export const READER_CONFIG_STORAGE_KEY = 'rebook-web-config'
 export const AI_CHAT_DEFAULTS_VERSION = 1
 export const TRANSLATION_DEFAULTS_VERSION = 2
 export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = TRANSLATION_DEFAULTS_VERSION
+export const OFFICIAL_EXTENSION_CATALOG_URL = apiUrl('/extensions/catalog')
+const MAX_EXTENSION_CATALOG_SIZE = 2 * 1024 * 1024
 
 type ExtensionInstallations = Record<string, RebookExtensionInstallation>
 
@@ -45,7 +48,7 @@ export function loadExtensionMarketplaceState(): ExtensionMarketplaceState {
   const shouldEnableTranslationByDefault = storedDefaultsVersion < TRANSLATION_DEFAULTS_VERSION
   return normalizeState({
     extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
-    extensionCatalogURL: stringValue(stored.extensionCatalogURL),
+    extensionCatalogURL: stringValue(stored.extensionCatalogURL) || OFFICIAL_EXTENSION_CATALOG_URL,
     extensionCatalogJSON: stringValue(stored.extensionCatalogJSON),
     extensionInstallations,
     translate: shouldEnableTranslationByDefault || stored.translate === true,
@@ -76,9 +79,13 @@ export function parseExtensionMarketplaceCatalog(state: ExtensionMarketplaceStat
   const source = state.extensionCatalogJSON.trim()
   if (!source) return { entries: [], error: '' }
   try {
+    const official = isOfficialExtensionCatalogURL(state.extensionCatalogURL)
     return {
       entries: parseRebookExtensionCatalogEntries(JSON.parse(source), { source: 'marketplace' })
-        .filter(entry => entry.manifest.id !== TRIAL_LIMIT_EXTENSION_ID),
+        .filter(entry => !builtInCatalog.has(entry.manifest.id))
+        .map(entry => official
+          ? { ...entry, source: 'marketplace' }
+          : { ...entry, source: 'marketplace', trust: 'unverified' as const, verified: false }),
       error: '',
     }
   } catch (error) {
@@ -86,6 +93,50 @@ export function parseExtensionMarketplaceCatalog(state: ExtensionMarketplaceStat
       entries: [],
       error: error instanceof Error ? error.message : '扩展目录格式无效',
     }
+  }
+}
+
+export async function fetchExtensionMarketplaceCatalogJSON(
+  rawURL: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const url = rawURL.trim()
+  if (!url) throw new Error('Extension catalog URL is empty.')
+  const official = isOfficialExtensionCatalogURL(url)
+  const response = await fetch(url, {
+    cache: 'no-store',
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    signal,
+  })
+  if (!response.ok) throw new Error(`Extension catalog request failed with HTTP ${response.status}.`)
+  if (official && response.url && !isOfficialExtensionCatalogURL(response.url)) {
+    throw new Error('The official extension catalog redirected to an untrusted URL.')
+  }
+  const declaredSize = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_EXTENSION_CATALOG_SIZE) {
+    throw new Error('Extension catalog exceeds 2 MiB.')
+  }
+  const text = await response.text()
+  if (new TextEncoder().encode(text).byteLength > MAX_EXTENSION_CATALOG_SIZE) {
+    throw new Error('Extension catalog exceeds 2 MiB.')
+  }
+  const parsed = parseExtensionMarketplaceCatalog({
+    ...loadExtensionMarketplaceState(),
+    extensionCatalogURL: url,
+    extensionCatalogJSON: text,
+  })
+  if (parsed.error) throw new Error(parsed.error)
+  return text
+}
+
+export function isOfficialExtensionCatalogURL(rawURL: string): boolean {
+  try {
+    const actual = new URL(rawURL, window.location.href)
+    const official = new URL(OFFICIAL_EXTENSION_CATALOG_URL, window.location.href)
+    return actual.origin === official.origin && actual.pathname === official.pathname
+  } catch {
+    return false
   }
 }
 
@@ -98,8 +149,9 @@ export function installMarketplaceExtension(
   extensionId: string,
 ): ExtensionMarketplaceState {
   const manager = createManager(state)
-  manager.install(extensionId, { enabled: true })
-  return withManager(setFeatureEnabled(state, extensionId, true), manager)
+  const enabled = manager.getInstallation(extensionId)?.enabled ?? true
+  manager.install(extensionId, { enabled })
+  return withManager(setFeatureEnabled(state, extensionId, enabled), manager)
 }
 
 export function setMarketplaceExtensionEnabled(

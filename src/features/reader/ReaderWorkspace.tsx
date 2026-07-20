@@ -56,7 +56,6 @@ import {
   TTS_EXTENSION_ID,
   getReadableContentUnit,
   getReadableContentUnits,
-  loadRebookExtensionModule,
   registerBuiltInParsers,
   registry,
   resolveReadableContentUnitIndex,
@@ -66,6 +65,7 @@ import {
   type RebookExtensionCatalogItem,
   type RebookExtensionInstallation,
   type RebookExtensionManifest,
+  type RebookExtensionSettingInspection,
   type RendererStyles,
   type TranslationRuntime,
   type TranslationRuntimeState,
@@ -80,6 +80,15 @@ import {
   assetUrl,
   type ShelfItem,
 } from '../../lib/api'
+import {
+  getVerifiedExtensionCacheKey,
+  loadVerifiedMarketplaceExtension,
+} from '../../lib/verified-extension-runtime'
+import {
+  createSandboxedMarketplaceExtension,
+  getSandboxedExtensionCacheKey,
+  type BrowserExtensionSandboxRuntime,
+} from '../../lib/sandboxed-extension-runtime'
 import {
   extractBookCover,
   getLocalBook,
@@ -102,6 +111,9 @@ import {
   BUILT_IN_EXTENSION_DEFAULTS_VERSION,
   TRANSLATION_DEFAULTS_VERSION,
   READER_CONFIG_STORAGE_KEY,
+  OFFICIAL_EXTENSION_CATALOG_URL,
+  fetchExtensionMarketplaceCatalogJSON,
+  isOfficialExtensionCatalogURL,
 } from '../../lib/extension-marketplace'
 import { useAppTheme } from '../theme/ThemeContext'
 import { useAuth } from '../auth/AuthContext'
@@ -124,8 +136,11 @@ import {
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
 type SidebarView = 'toc' | 'search'
-export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'chat' | 'debug'
+export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'chat' | 'extensions' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
+type DemoExtensionSettings = Record<string, Record<string, unknown>>
+type DemoExtensionCommand = { id: string; title: string; extensionId: string; extensionName: string; available: boolean }
+type DemoExtensionPanel = { id: string; title: string; extensionId: string; extensionName: string; runtime: BrowserExtensionSandboxRuntime }
 export type DemoExtensionRuntimeStatus = Record<string, { state: 'loaded' | 'loading' | 'error' | 'idle'; message: string }>
 
 export interface DemoConfig {
@@ -179,6 +194,7 @@ export interface DemoConfig {
   extensionCatalogURL: string
   extensionCatalogJSON: string
   extensionInstallations: DemoExtensionInstallations
+  extensionSettings: DemoExtensionSettings
 }
 
 interface ChatMessage {
@@ -539,9 +555,10 @@ const defaultConfig: DemoConfig = {
   chatMaxContentChars: '6000',
   chatPanelWidth: '420',
   extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
-  extensionCatalogURL: '',
+  extensionCatalogURL: OFFICIAL_EXTENSION_CATALOG_URL,
   extensionCatalogJSON: '',
   extensionInstallations: {},
+  extensionSettings: {},
 }
 
 function readStoryMemoryToolConfig(config: DemoConfig): StoryMemoryToolConfig | null {
@@ -825,7 +842,7 @@ function ReaderWorkspace({
   } | null>(null)
   const ttsAbortRef = useRef<AbortController | null>(null)
   const translationRuntimeUnsubscribeRef = useRef<(() => void) | null>(null)
-  const extensionRuntimeCacheRef = useRef(new Map<string, { installUrl: string; extension: RebookExtension }>())
+  const extensionRuntimeCacheRef = useRef(new Map<string, RebookExtension>())
   const ttsPlayer = useMemo(() => createBrowserTTSAudioPlayer(), [])
 
   const [config, setConfig] = useState<DemoConfig>(() => loadReaderConfig())
@@ -833,6 +850,7 @@ function ReaderWorkspace({
   const { theme: appTheme } = useAppTheme()
   const [draftConfig, setDraftConfig] = useState<DemoConfig>(config)
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
+  const [marketplaceCatalogStatus, setMarketplaceCatalogStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [, setExtensionRuntimeStatus] = useState<DemoExtensionRuntimeStatus>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
@@ -945,6 +963,35 @@ function ReaderWorkspace({
     pushDebugEntry(label, payload)
   }, [pushDebugEntry])
 
+  useEffect(() => {
+    const url = configRef.current.extensionCatalogURL.trim()
+    const controller = new AbortController()
+    let cancelled = false
+    setMarketplaceCatalogStatus('loading')
+    void fetchExtensionMarketplaceCatalogJSON(url, controller.signal).then(
+      catalog => {
+        if (cancelled) return
+        setConfig(current => {
+          if (current.extensionCatalogURL.trim() !== url) return current
+          const next = { ...current, extensionCatalogJSON: catalog }
+          configRef.current = next
+          saveReaderConfig(next)
+          return next
+        })
+        setMarketplaceCatalogStatus('ready')
+      },
+      error => {
+        if (cancelled || controller.signal.aborted) return
+        setMarketplaceCatalogStatus('failed')
+        appendDebug('extension catalog refresh failed; third-party execution is blocked', formatError(error))
+      },
+    )
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [appendDebug, config.extensionCatalogURL])
+
   const flushShelfProgress = useCallback(async () => {
     if (!libraryBookId || !pendingProgressRef.current) return
     const pending = pendingProgressRef.current
@@ -1001,6 +1048,16 @@ function ReaderWorkspace({
   useEffect(() => {
     const entries = getEnabledDemoMarketplaceExtensionItems(config)
     let cancelled = false
+    if (marketplaceCatalogStatus !== 'ready') {
+      setMarketplaceRuntimeExtensions([])
+      setExtensionRuntimeStatus(Object.fromEntries(entries.map(entry => [entry.manifest.id, {
+        state: marketplaceCatalogStatus === 'failed' ? 'error' : 'loading',
+        message: marketplaceCatalogStatus === 'failed'
+          ? 'The extension catalog could not be refreshed; cached third-party code is blocked.'
+          : 'Refreshing the extension catalog before loading third-party code...',
+      }])))
+      return
+    }
     if (!entries.length) {
       setMarketplaceRuntimeExtensions([])
       setExtensionRuntimeStatus({})
@@ -1010,8 +1067,8 @@ function ReaderWorkspace({
     const loadingStatus: DemoExtensionRuntimeStatus = {}
     for (const entry of entries) {
       loadingStatus[entry.manifest.id] = {
-        state: entry.installUrl ? 'loading' : 'error',
-        message: entry.installUrl ? 'Loading runtime module...' : 'No installUrl is configured for this extension.',
+        state: entry.artifact ? 'loading' : 'error',
+        message: entry.artifact ? 'Verifying runtime artifact...' : 'No verified artifact is configured for this extension.',
       }
     }
     setExtensionRuntimeStatus(loadingStatus)
@@ -1020,26 +1077,27 @@ function ReaderWorkspace({
       const loaded: RebookExtension[] = []
       const nextStatus: DemoExtensionRuntimeStatus = {}
       for (const entry of entries) {
-        if (!entry.installUrl) {
+        if (!entry.artifact) {
           nextStatus[entry.manifest.id] = {
             state: 'error',
-            message: 'No installUrl is configured for this extension.',
+            message: 'No verified artifact is configured for this extension.',
           }
           continue
         }
         try {
-          const cached = extensionRuntimeCacheRef.current.get(entry.manifest.id)
-          const extension = cached?.installUrl === entry.installUrl
-            ? cached.extension
-            : await loadDemoMarketplaceExtension(entry)
-          extensionRuntimeCacheRef.current.set(entry.manifest.id, {
-            installUrl: entry.installUrl,
-            extension,
-          })
+          const sandboxed = entry.manifest.runtime?.kind === 'worker' || entry.manifest.runtime?.kind === 'iframe'
+          const cacheKey = sandboxed
+            ? getSandboxedExtensionCacheKey(entry)
+            : getVerifiedExtensionCacheKey(entry)
+          const cached = extensionRuntimeCacheRef.current.get(cacheKey)
+          const extension = cached ?? (sandboxed
+            ? await createSandboxedMarketplaceExtension(entry)
+            : await loadVerifiedMarketplaceExtension(entry))
+          extensionRuntimeCacheRef.current.set(cacheKey, extension)
           loaded.push(extension)
           nextStatus[entry.manifest.id] = {
             state: 'loaded',
-            message: `Loaded runtime from ${entry.installUrl}.`,
+            message: `${sandboxed ? 'Sandboxed' : 'Verified and loaded'} ${entry.manifest.id}@${entry.manifest.version}.`,
           }
         } catch (error) {
           nextStatus[entry.manifest.id] = {
@@ -1048,7 +1106,7 @@ function ReaderWorkspace({
           }
           appendDebug('marketplace extension load failed', {
             id: entry.manifest.id,
-            installUrl: entry.installUrl,
+            artifact: entry.artifact.url,
             error: formatError(error),
           })
         }
@@ -1062,7 +1120,7 @@ function ReaderWorkspace({
     return () => {
       cancelled = true
     }
-  }, [appendDebug, runtimeExtensionLoadKey])
+  }, [appendDebug, marketplaceCatalogStatus, runtimeExtensionLoadKey])
 
   const scanReflowFigures = useCallback(() => ({
     ...createReflowDebugSnapshot(viewerRef.current),
@@ -1355,7 +1413,7 @@ function ReaderWorkspace({
 
   const createDemoReader = useCallback((cfg: DemoConfig) => {
     if (!viewerRef.current) return null
-    return createReader({
+    const reader = createReader({
       container: viewerRef.current,
       layout: cfg.layout,
       maxColumnCount: Number(cfg.spread),
@@ -1364,6 +1422,8 @@ function ReaderWorkspace({
       fixedPainter: 'canvas',
       styles: getReaderStyles(cfg, appTheme),
     })
+    reader.loadExtensionSettingsSnapshot?.(cfg.extensionSettings)
+    return reader
   }, [buildPlugins, appTheme])
 
   const wireReaderEvents = useCallback((reader: any) => {
@@ -2000,6 +2060,43 @@ function ReaderWorkspace({
     })
   }
 
+  const extensionSettings = (readerRef.current?.getExtensionSettings?.() ?? [])
+    .filter((setting: RebookExtensionSettingInspection) => setting.manifest && !isDemoExtensionFeatureControlled(setting.manifest))
+  const registeredExtensionCommandIds = new Set(
+    (readerRef.current?.getExtensionCommands?.() ?? []).map((command: { id: string }) => command.id),
+  )
+  const extensionCommands: DemoExtensionCommand[] = (readerRef.current?.getExtensionContributions?.().commands ?? [])
+    .filter((command: { manifest: RebookExtensionManifest }) => !isDemoExtensionFeatureControlled(command.manifest))
+    .map((command: { extensionId: string; manifest: RebookExtensionManifest; contribution: { id: string; title: string } }) => ({
+      id: command.contribution.id,
+      title: command.contribution.title,
+      extensionId: command.extensionId,
+      extensionName: command.manifest.displayName || command.manifest.name,
+      available: registeredExtensionCommandIds.has(command.contribution.id),
+    }))
+  const extensionPanels: DemoExtensionPanel[] = (readerRef.current?.getExtensionContributions?.().panels ?? [])
+    .filter((panel: { manifest: RebookExtensionManifest }) => !isDemoExtensionFeatureControlled(panel.manifest))
+    .flatMap((panel: { extensionId: string; manifest: RebookExtensionManifest; contribution: { id: string; title: string } }) => {
+      const runtime = readerRef.current?.getExtensionRuntime?.(panel.extensionId) as BrowserExtensionSandboxRuntime | undefined
+      if (!runtime || runtime.kind !== 'iframe') return []
+      return [{
+        id: panel.contribution.id,
+        title: panel.contribution.title,
+        extensionId: panel.extensionId,
+        extensionName: panel.manifest.displayName || panel.manifest.name,
+        runtime,
+      }]
+    })
+
+  const executeExtensionCommand = async (id: string) => {
+    try {
+      const result = await readerRef.current?.executeExtensionCommand?.(id)
+      setStatus(result === undefined ? t('settings.commandCompleted') : `${t('settings.commandCompleted')}: ${formatCommandResult(result)}`)
+    } catch (error) {
+      setStatus(t('settings.commandFailed', { error: formatError(error) }))
+    }
+  }
+
   return (
     <div
       className="reader-shell flex h-full min-h-0 flex-col"
@@ -2158,6 +2255,10 @@ function ReaderWorkspace({
           storyUploadBusy={STORY_MEMORY_ENABLED ? storyUploadBusy : undefined}
           storyUploadStatus={STORY_MEMORY_ENABLED ? storyUploadStatus : undefined}
           onUploadCurrentBook={STORY_MEMORY_ENABLED ? uploadCurrentBookForStoryMemory : undefined}
+          extensionSettings={extensionSettings}
+          extensionCommands={extensionCommands}
+          extensionPanels={extensionPanels}
+          onExecuteExtensionCommand={executeExtensionCommand}
           onClose={closeSettings}
           onApply={() => void applyConfig()}
         />
@@ -3875,6 +3976,10 @@ export function ReaderSettingsDialog(props: {
   storyUploadBusy?: boolean
   storyUploadStatus?: string
   onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
+  extensionSettings?: readonly RebookExtensionSettingInspection[]
+  extensionCommands?: readonly DemoExtensionCommand[]
+  extensionPanels?: readonly DemoExtensionPanel[]
+  onExecuteExtensionCommand?(id: string): Promise<void>
   onClose(): void
   onApply(): void
 }) {
@@ -3888,6 +3993,9 @@ export function ReaderSettingsDialog(props: {
   if (props.config.translate) sections.push({ id: 'translation', label: t('settings.translation') })
   if (props.config.tts) sections.push({ id: 'tts', label: t('settings.tts') })
   if (props.config.chat) sections.push({ id: 'chat', label: t('settings.chat') })
+  if (props.extensionSettings?.length || props.extensionCommands?.length || props.extensionPanels?.length) {
+    sections.push({ id: 'extensions', label: t('settings.extensions') })
+  }
   sections.push({ id: 'debug', label: t('settings.debug') })
   return (
     <div className="fixed inset-0 z-90 grid place-items-center bg-overlay p-4">
@@ -3928,6 +4036,10 @@ export function ReaderSettingsDialog(props: {
               storyUploadBusy={props.storyUploadBusy ?? false}
               storyUploadStatus={props.storyUploadStatus ?? ''}
               onUploadCurrentBook={props.onUploadCurrentBook}
+              extensionSettings={props.extensionSettings ?? []}
+              extensionCommands={props.extensionCommands ?? []}
+              extensionPanels={props.extensionPanels ?? []}
+              onExecuteExtensionCommand={props.onExecuteExtensionCommand}
             />
           </div>
           <div className="flex justify-end gap-2 border-t border-line p-4">
@@ -3954,6 +4066,10 @@ function SettingsSectionForm({
   storyUploadBusy,
   storyUploadStatus,
   onUploadCurrentBook,
+  extensionSettings,
+  extensionCommands,
+  extensionPanels,
+  onExecuteExtensionCommand,
 }: {
   section: SettingsSection
   config: DemoConfig
@@ -3962,6 +4078,10 @@ function SettingsSectionForm({
   storyUploadBusy: boolean
   storyUploadStatus: string
   onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
+  extensionSettings: readonly RebookExtensionSettingInspection[]
+  extensionCommands: readonly DemoExtensionCommand[]
+  extensionPanels: readonly DemoExtensionPanel[]
+  onExecuteExtensionCommand?(id: string): Promise<void>
 }) {
   const { language, setLanguage, t } = useI18n()
   const { theme, setTheme } = useAppTheme()
@@ -4133,6 +4253,18 @@ function SettingsSectionForm({
       </SettingsForm>
     )
   }
+  if (section === 'extensions') {
+    return (
+      <GenericExtensionSettings
+        config={config}
+        setConfig={setConfig}
+        settings={extensionSettings}
+        commands={extensionCommands}
+        panels={extensionPanels}
+        onExecuteCommand={onExecuteExtensionCommand}
+      />
+    )
+  }
   return (
     <SettingsForm>
       <SettingsGroup title={t('settings.developerOptions')}>
@@ -4140,6 +4272,186 @@ function SettingsSectionForm({
       </SettingsGroup>
     </SettingsForm>
   )
+}
+
+function GenericExtensionSettings({
+  config,
+  setConfig,
+  settings,
+  commands,
+  panels,
+  onExecuteCommand,
+}: {
+  config: DemoConfig
+  setConfig(config: DemoConfig): void
+  settings: readonly RebookExtensionSettingInspection[]
+  commands: readonly DemoExtensionCommand[]
+  panels: readonly DemoExtensionPanel[]
+  onExecuteCommand?(id: string): Promise<void>
+}) {
+  const { t } = useI18n()
+  const extensionIds = [...new Set([
+    ...settings.map(setting => setting.extensionId),
+    ...commands.map(command => command.extensionId),
+    ...panels.map(panel => panel.extensionId),
+  ])]
+  if (!extensionIds.length) {
+    return <SettingsForm><p className="m-0 text-ui-md text-muted">{t('settings.noExtensionContributions')}</p></SettingsForm>
+  }
+  const updateSetting = (setting: RebookExtensionSettingInspection, value: unknown) => {
+    setConfig({
+      ...config,
+      extensionSettings: {
+        ...config.extensionSettings,
+        [setting.extensionId]: {
+          ...config.extensionSettings[setting.extensionId],
+          [setting.key]: value,
+        },
+      },
+    })
+  }
+  return (
+    <SettingsForm>
+      {extensionIds.map(extensionId => {
+        const extensionSettings = settings.filter(setting => setting.extensionId === extensionId)
+        const extensionCommands = commands.filter(command => command.extensionId === extensionId)
+        const extensionPanels = panels.filter(panel => panel.extensionId === extensionId)
+        const manifest = extensionSettings[0]?.manifest
+        const title = manifest?.displayName || manifest?.name || extensionCommands[0]?.extensionName || extensionPanels[0]?.extensionName || extensionId
+        return (
+          <SettingsGroup key={extensionId} title={title}>
+            {extensionSettings.map(setting => (
+              <ExtensionSettingRow
+                key={setting.key}
+                setting={setting}
+                value={config.extensionSettings[extensionId]?.[setting.key] ?? setting.effectiveValue}
+                onChange={value => updateSetting(setting, value)}
+              />
+            ))}
+            {extensionCommands.map(command => (
+              <SettingsActionRow
+                key={command.id}
+                label={command.title}
+                description={command.id}
+                actionLabel={t('settings.runCommand')}
+                disabled={!command.available || !onExecuteCommand}
+                onAction={() => { if (onExecuteCommand) void onExecuteCommand(command.id) }}
+              />
+            ))}
+            {extensionPanels.map(panel => <SandboxExtensionPanel key={panel.id} panel={panel} />)}
+          </SettingsGroup>
+        )
+      })}
+    </SettingsForm>
+  )
+}
+
+function SandboxExtensionPanel({ panel }: { panel: DemoExtensionPanel }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    panel.runtime.mount(host, panel.id)
+    return () => panel.runtime.unmount()
+  }, [panel])
+  return (
+    <div className="px-4 py-3 sm:px-5">
+      <div className="mb-2 text-ui-md font-medium text-ink-soft">{panel.title}</div>
+      <div ref={hostRef} className="min-h-64 overflow-hidden rounded-lg bg-bg" />
+    </div>
+  )
+}
+
+function ExtensionSettingRow({
+  setting,
+  value,
+  onChange,
+}: {
+  setting: RebookExtensionSettingInspection
+  value: unknown
+  onChange(value: unknown): void
+}) {
+  const contribution = setting.contribution
+  const label = contribution?.title || setting.key
+  if (!contribution) return null
+  if (contribution.type === 'boolean') {
+    return <SettingsToggleRow label={label} description={contribution.description} checked={Boolean(value)} onChange={onChange} />
+  }
+  if (contribution.enum?.length) {
+    const options = contribution.enum.map(option => [JSON.stringify(option), String(option)] as [string, string])
+    return (
+      <SettingsSelectRow
+        label={label}
+        value={JSON.stringify(value)}
+        options={options}
+        onChange={next => onChange(JSON.parse(next))}
+      />
+    )
+  }
+  if (contribution.type === 'array' || contribution.type === 'object') {
+    return <ExtensionJSONSettingRow label={label} description={contribution.description} value={value} onChange={onChange} />
+  }
+  return (
+    <SettingsTextRow
+      label={label}
+      value={value === undefined || value === null ? '' : String(value)}
+      type={contribution.secret ? 'password' : contribution.type === 'number' || contribution.type === 'integer' ? 'number' : 'text'}
+      onChange={next => {
+        if (contribution.type === 'number' || contribution.type === 'integer') {
+          const parsed = Number(next)
+          if (Number.isFinite(parsed)) onChange(contribution.type === 'integer' ? Math.trunc(parsed) : parsed)
+        } else {
+          onChange(next)
+        }
+      }}
+    />
+  )
+}
+
+function ExtensionJSONSettingRow({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string
+  description?: string
+  value: unknown
+  onChange(value: unknown): void
+}) {
+  const { t } = useI18n()
+  const [draft, setDraft] = useState(() => JSON.stringify(value ?? {}, null, 2))
+  const [error, setError] = useState('')
+  useEffect(() => setDraft(JSON.stringify(value ?? {}, null, 2)), [value])
+  return (
+    <label className="block px-4 py-3 sm:px-5">
+      <span className="block text-ui-md font-medium text-ink-soft">{label}</span>
+      {description ? <span className="mt-0.5 block text-ui-sm text-muted">{description}</span> : null}
+      <textarea
+        className={`${inputClass} mt-2 min-h-24 w-full resize-y font-mono text-ui-sm`}
+        value={draft}
+        onChange={event => setDraft(event.target.value)}
+        onBlur={() => {
+          try {
+            onChange(JSON.parse(draft))
+            setError('')
+          } catch {
+            setError(t('settings.invalidJson'))
+          }
+        }}
+      />
+      {error ? <span className="mt-1 block text-ui-sm text-danger">{error}</span> : null}
+    </label>
+  )
+}
+
+function formatCommandResult(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }
 
 function FontSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig(config: DemoConfig): void }) {
@@ -4299,7 +4611,7 @@ function SettingsActionRow({
   onAction,
 }: {
   label: string
-  description: string
+  description?: string
   actionLabel: string
   status?: string
   disabled?: boolean
@@ -4351,7 +4663,7 @@ function SettingsToggleRow({
   onChange,
 }: {
   label: string
-  description: string
+  description?: string
   checked: boolean
   onChange(value: boolean): void
 }) {
@@ -4359,7 +4671,7 @@ function SettingsToggleRow({
     <label className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
       <span className="min-w-0">
         <span className="block text-ui-md font-medium text-ink-soft">{label}</span>
-        <span className="mt-0.5 block text-ui-sm text-muted">{description}</span>
+        {description ? <span className="mt-0.5 block text-ui-sm text-muted">{description}</span> : null}
       </span>
       <Toggle checked={checked} onChange={onChange} ariaLabel={label} />
     </label>
@@ -4619,6 +4931,7 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
       : supportedValue.translationRuntimeEnabled ?? defaultConfig.translationRuntimeEnabled,
     translationTargetLanguage: normalizeTranslationTargetLanguage(supportedValue.translationTargetLanguage),
     extensionInstallations: normalizeDemoExtensionInstallations(supportedValue.extensionInstallations),
+    extensionSettings: normalizeDemoExtensionSettings(supportedValue.extensionSettings),
   }
   const storedExtensionDefaultsVersion = Number(supportedValue.extensionDefaultsVersion) || 0
   if (storedExtensionDefaultsVersion < TRANSLATION_DEFAULTS_VERSION) {
@@ -4658,6 +4971,16 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
     }
   }
   return createDemoConfigWithExtensionManager(config, manager)
+}
+
+function normalizeDemoExtensionSettings(value: unknown): DemoExtensionSettings {
+  if (!isRecord(value)) return {}
+  const settings: DemoExtensionSettings = {}
+  for (const [extensionId, extensionSettings] of Object.entries(value)) {
+    if (!isRecord(extensionSettings)) continue
+    settings[extensionId] = { ...extensionSettings }
+  }
+  return settings
 }
 
 function normalizeDemoExtensionInstallations(value: unknown): DemoExtensionInstallations {
@@ -4741,9 +5064,13 @@ function getDemoMarketplaceCatalogParseResult(config: DemoConfig): {
   const source = config.extensionCatalogJSON.trim()
   if (!source) return { entries: [], error: '' }
   try {
+    const official = isOfficialExtensionCatalogURL(config.extensionCatalogURL)
     return {
       entries: parseRebookExtensionCatalogEntries(JSON.parse(source), { source: 'marketplace' })
-        .filter(entry => entry.manifest.id !== TRIAL_LIMIT_EXTENSION_ID),
+        .filter(entry => !builtInExtensionCatalog.has(entry.manifest.id))
+        .map(entry => official
+          ? { ...entry, source: 'marketplace' }
+          : { ...entry, source: 'marketplace', trust: 'unverified' as const, verified: false }),
       error: '',
     }
   } catch (error) {
@@ -4772,19 +5099,9 @@ function createDemoExtensionManager(config: DemoConfig) {
 function getEnabledDemoMarketplaceExtensionItems(config: DemoConfig): readonly RebookExtensionCatalogItem[] {
   return createDemoExtensionManager(config)
     .listItems()
-    .filter(item => item.enabled && !isDemoExtensionFeatureControlled(item.manifest))
-}
-
-async function loadDemoMarketplaceExtension(entry: RebookExtensionCatalogItem): Promise<RebookExtension> {
-  if (!entry.installUrl) {
-    throw new Error(`Marketplace extension "${entry.manifest.id}" does not define installUrl.`)
-  }
-  const moduleUrl = new URL(entry.installUrl, window.location.href).href
-  return loadRebookExtensionModule(
-    moduleUrl,
-    url => import(/* @vite-ignore */ url),
-    { catalogEntry: entry },
-  )
+    .filter(item => item.enabled
+      && item.installation?.version === item.manifest.version
+      && !isDemoExtensionFeatureControlled(item.manifest))
 }
 
 function createDemoConfigWithExtensionManager(config: DemoConfig, manager: ReturnType<typeof createDemoExtensionManager>): DemoConfig {
