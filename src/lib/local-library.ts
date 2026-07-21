@@ -39,6 +39,7 @@ type LocalBookRecord = {
   syncState?: LocalBookSyncState
   cloudAccountId?: string | null
   serverBookId?: string | null
+  annotationBookId?: string | null
   cloudDriveItemId?: string | null
   lastSyncAt?: string | null
   retryCount?: number
@@ -63,6 +64,14 @@ export type LocalBookSyncCandidate = {
   cloudAccountId: string | null
   serverBookId: string | null
   retryCount: number
+}
+
+export type LocalBookAnnotationIdentity = {
+  contentHash: string
+  title: string
+  author: string | null
+  sourceType: string
+  sourceFileName: string
 }
 
 registerBuiltInParsers(registry)
@@ -126,6 +135,31 @@ export async function getLocalBook(id: string): Promise<LocalBook | null> {
     item: await toShelfItem(record),
     file: new File([record.file], record.fileName, { type: record.mimeType }),
   }
+}
+
+export async function getLocalBookAnnotationIdentity(id: string): Promise<LocalBookAnnotationIdentity | null> {
+  const record = await getRecord(id)
+  if (!record) return null
+  if (!record.contentHash) {
+    record.contentHash = await hashBlob(record.file)
+    if (!record.contentHash) return null
+    await putRecord(record)
+  }
+  return {
+    contentHash: record.contentHash,
+    title: record.title,
+    author: record.author,
+    sourceType: record.sourceType,
+    sourceFileName: record.fileName,
+  }
+}
+
+export async function updateLocalBookAnnotationIdentity(id: string, annotationBookId: string): Promise<void> {
+  const record = await getRecord(id)
+  if (!record) return
+  record.annotationBookId = annotationBookId
+  await putRecord(record)
+  window.dispatchEvent(new Event('rebook:local-library-changed'))
 }
 
 export async function updateLocalBookMetadata(
@@ -238,6 +272,17 @@ async function toShelfItem(record: LocalBookRecord): Promise<ShelfItem> {
     storageProvider: record.syncState === 'synced' ? 'webdav' : 'local',
     syncState: record.syncState || 'local',
     serverBookId: record.serverBookId || null,
+    annotationBookId: record.annotationBookId || null,
+  }
+}
+
+async function hashBlob(blob: Blob): Promise<string | null> {
+  try {
+    const digest = await globalThis.crypto?.subtle?.digest('SHA-256', await blob.arrayBuffer())
+    if (!digest) return null
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  } catch {
+    return null
   }
 }
 

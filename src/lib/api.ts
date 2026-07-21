@@ -43,6 +43,7 @@ export type ShelfItem = {
   storageProvider: string | null
   syncState?: 'local' | 'queued' | 'syncing' | 'synced' | 'failed'
   serverBookId?: string | null
+  annotationBookId?: string | null
 }
 
 export type ShelfList = {

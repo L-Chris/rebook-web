@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Highlighter,
   Info,
   Languages,
   ListTree,
@@ -19,6 +20,7 @@ import {
   LogOut,
   Maximize2,
   Menu,
+  MessageSquarePlus,
   MessageSquareText,
   Minimize2,
   PanelLeft,
@@ -26,6 +28,7 @@ import {
   PinOff,
   Plus,
   Search,
+  StickyNote,
   Settings,
   Trash2,
   UserRound,
@@ -67,6 +70,9 @@ import {
   type RebookExtensionManifest,
   type RebookExtensionSettingInspection,
   type RendererStyles,
+  type BookPosition,
+  type BookSelection,
+  type ReaderSelectionEvent,
   type TranslationRuntime,
   type TranslationRuntimeState,
   type TOCItem,
@@ -92,7 +98,9 @@ import {
 import {
   extractBookCover,
   getLocalBook,
+  getLocalBookAnnotationIdentity,
   isLocalBookId,
+  updateLocalBookAnnotationIdentity,
   updateLocalBookMetadata,
   updateLocalBookProgress,
 } from '../../lib/local-library'
@@ -134,10 +142,18 @@ import {
   type Translate,
 } from '../i18n/LanguageContext'
 import { usePreferenceSync } from '../preferences/PreferencesSyncContext'
+import {
+  createAnnotation as createStoredAnnotation,
+  deleteAnnotation as deleteStoredAnnotation,
+  listAnnotations,
+  syncAnnotations,
+  updateAnnotation as updateStoredAnnotation,
+  type ReaderAnnotation,
+} from '../../lib/annotations'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
-type SidebarView = 'toc' | 'search'
+type SidebarView = 'toc' | 'search' | 'annotations'
 export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'chat' | 'extensions' | 'debug'
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
 type DemoExtensionSettings = Record<string, Record<string, unknown>>
@@ -244,6 +260,33 @@ interface SearchItem {
   after: string
 }
 
+interface AnnotationComposerState {
+  mode: 'selection' | 'edit'
+  selection?: BookSelection
+  annotationId?: string
+  quote?: string | null
+  x: number
+  anchorTop: number
+  anchorBottom: number
+  note: string
+  noteOpen: boolean
+}
+
+interface PendingAnnotationConfirmation {
+  title: string
+  description: string
+  resolve(approved: boolean): void
+}
+
+interface AnnotationAgentBridge {
+  getSelection(): BookSelection | null
+  list(): ReaderAnnotation[]
+  create(input: { note?: string; source: 'ai' }): Promise<ReaderAnnotation | null>
+  update(id: string, input: { note?: string }): Promise<ReaderAnnotation | null>
+  remove(id: string): Promise<boolean>
+  confirm(title: string, description: string): Promise<boolean>
+}
+
 type DemoTOCItem = (TOCViewItem | TOCItem) & {
   id?: string
   target?: string
@@ -330,6 +373,7 @@ const MAX_SEARCH_RESULTS = 80
 const MAX_CHAT_REFERENCE_OPTIONS = 120
 const MAX_CHAT_REFERENCE_SUGGESTIONS = 8
 const MAX_CHAT_REFERENCE_EXCERPT = 220
+const ANNOTATION_COLOR = 'rgba(96, 165, 250, 0.28)'
 const READER_SIDEBAR_PINNED_STORAGE_KEY = 'rebook-reader-sidebar-pinned'
 const STORY_MEMORY_ENABLED = import.meta.env.DEV
 const configuredRebookServiceUrl = String(import.meta.env.VITE_REBOOK_SERVICE_URL ?? '').trim()
@@ -576,10 +620,14 @@ function buildStoryMemorySystemPrompt(config: DemoConfig, language: AppLanguage)
   const languageInstruction = language === 'en'
     ? 'Respond in English unless the user explicitly asks for another language.'
     : '除非用户明确要求其他语言，否则请使用简体中文回答。'
-  if (!storyMemory) return languageInstruction
+  const annotationInstruction = language === 'en'
+    ? '# Highlights and notes\n- Use annotation tools when the user asks to inspect, search, create, edit, or delete highlights and notes. Mutation tools require explicit user confirmation in the reader UI.\n- New annotations can only target the current reader selection; never invent a raw locator.'
+    : '# 高亮与批注\n- 用户要求查看、检索、新增、修改或删除高亮/批注时，使用 annotation 工具。修改类工具会在阅读器界面要求用户明确确认。\n- 新批注只能基于当前阅读器选区，不要自行编造原文位置。'
+  if (!storyMemory) return `${languageInstruction}\n${annotationInstruction}`
   if (language === 'en') {
     return [
       languageInstruction,
+      annotationInstruction,
       '# Story Memory tools',
       '- AI Chat is connected to rebook-service story memory for cross-chapter retrieval of characters, places, organizations, events, relationships, profiles, and timelines.',
       '- Prefer getStoryTimeline, getStoryEntities, getCharacterProfile, getCharacterRelationships, or searchStoryMemory for questions about timelines, relationships, character details, backgrounds, places, organizations, events, or causality.',
@@ -590,6 +638,7 @@ function buildStoryMemorySystemPrompt(config: DemoConfig, language: AppLanguage)
   }
   return [
     languageInstruction,
+    annotationInstruction,
     '# Story Memory 工具',
     '- 当前 AI Chat 已接入 rebook-service story memory，可用于跨章节检索人物、地点、组织、事件、人物关系、人物细节和故事时间线。',
     '- 当用户询问“时间线”“人物关系”“人物细节”“角色背景”“地点/组织/事件”“前因后果”时，优先调用 story memory 工具：getStoryTimeline、getStoryEntities、getCharacterProfile、getCharacterRelationships 或 searchStoryMemory。',
@@ -597,6 +646,118 @@ function buildStoryMemorySystemPrompt(config: DemoConfig, language: AppLanguage)
     '- 只有当用户明确要求“索引/建立故事记忆/刷新故事记忆”时，才调用 indexStoryMemory；不要在普通问答中自动索引。',
     `- 当前 story memory bookId: ${storyMemory.bookId}`,
   ].join('\n')
+}
+
+function createAnnotationAgentTools(bridgeRef: { current: AnnotationAgentBridge | null }): ToolSet {
+  return {
+    getCurrentSelection: tool({
+      description: '获取用户当前在阅读器中选中的原文和稳定位置。创建高亮或批注前应先调用。',
+      inputSchema: jsonSchema({ type: 'object', properties: {}, additionalProperties: false }),
+      execute: async () => {
+        const selection = bridgeRef.current?.getSelection() ?? null
+        return selection
+          ? { ok: true, text: selection.text ?? '', location: selection.range }
+          : { ok: false, error: '当前没有可用的阅读器选区。请让用户先选择原文。' }
+      },
+    }),
+    listAnnotations: tool({
+      description: '列出当前书籍的用户高亮和批注。',
+      inputSchema: jsonSchema<{ limit?: number }>({
+        type: 'object',
+        properties: { limit: { type: 'number', description: '最多返回数量，默认 50。' } },
+        additionalProperties: false,
+      }),
+      execute: async input => ({
+        items: (bridgeRef.current?.list() ?? []).slice(0, Math.max(1, Math.min(100, input.limit ?? 50))).map(compactAnnotationForAgent),
+      }),
+    }),
+    searchAnnotations: tool({
+      description: '在当前书籍的高亮原文和批注内容中搜索。',
+      inputSchema: jsonSchema<{ query: string; limit?: number }>({
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词。' },
+          limit: { type: 'number', description: '最多返回数量，默认 20。' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      }),
+      execute: async input => {
+        const query = input.query.trim().toLocaleLowerCase()
+        const items = (bridgeRef.current?.list() ?? []).filter(item => (
+          item.quote?.toLocaleLowerCase().includes(query)
+          || item.note?.toLocaleLowerCase().includes(query)
+        ))
+        return { items: items.slice(0, Math.max(1, Math.min(100, input.limit ?? 20))).map(compactAnnotationForAgent) }
+      },
+    }),
+    createAnnotation: tool({
+      description: '基于当前选区创建高亮或批注。执行前会要求用户在阅读器界面确认。',
+      inputSchema: jsonSchema<{ note?: string }>({
+        type: 'object',
+        properties: {
+          note: { type: 'string', description: '可选批注内容；不填则仅高亮。' },
+        },
+        additionalProperties: false,
+      }),
+      execute: async input => {
+        const bridge = bridgeRef.current
+        if (!bridge?.getSelection()) return { ok: false, error: '当前没有选区。' }
+        const approved = await bridge.confirm('AI 请求创建批注', input.note || '为当前选中的原文添加高亮')
+        if (!approved) return { ok: false, cancelled: true }
+        const annotation = await bridge.create({ ...input, source: 'ai' })
+        return annotation ? { ok: true, annotation: compactAnnotationForAgent(annotation) } : { ok: false }
+      },
+    }),
+    updateAnnotation: tool({
+      description: '修改已有批注文字。执行前会要求用户确认。',
+      inputSchema: jsonSchema<{ annotationId: string; note?: string }>({
+        type: 'object',
+        properties: {
+          annotationId: { type: 'string' },
+          note: { type: 'string' },
+        },
+        required: ['annotationId'],
+        additionalProperties: false,
+      }),
+      execute: async input => {
+        const bridge = bridgeRef.current
+        if (!bridge) return { ok: false }
+        const approved = await bridge.confirm('AI 请求修改批注', input.note || '修改高亮样式')
+        if (!approved) return { ok: false, cancelled: true }
+        const annotation = await bridge.update(input.annotationId, input)
+        return annotation ? { ok: true, annotation: compactAnnotationForAgent(annotation) } : { ok: false, error: '批注不存在。' }
+      },
+    }),
+    deleteAnnotation: tool({
+      description: '删除已有高亮或批注。执行前会要求用户确认。',
+      inputSchema: jsonSchema<{ annotationId: string }>({
+        type: 'object',
+        properties: { annotationId: { type: 'string' } },
+        required: ['annotationId'],
+        additionalProperties: false,
+      }),
+      execute: async input => {
+        const bridge = bridgeRef.current
+        if (!bridge) return { ok: false }
+        const approved = await bridge.confirm('AI 请求删除批注', '删除后会同步到其他设备。')
+        if (!approved) return { ok: false, cancelled: true }
+        return { ok: await bridge.remove(input.annotationId) }
+      },
+    }),
+  }
+}
+
+function compactAnnotationForAgent(annotation: ReaderAnnotation) {
+  return {
+    id: annotation.id,
+    quote: annotation.quote,
+    note: annotation.note,
+    color: annotation.color,
+    location: annotation.location,
+    source: annotation.source,
+    updatedAt: annotation.updatedAt,
+  }
 }
 
 function createStoryMemoryTools(
@@ -835,6 +996,11 @@ function ReaderWorkspace({
   const bookRef = useRef<any>(null)
   const translatedTOCRef = useRef<readonly TOCItem[] | null>(null)
   const currentFileRef = useRef<File | null>(null)
+  const selectionRef = useRef<BookSelection | null>(null)
+  const annotationsRef = useRef<ReaderAnnotation[]>([])
+  const annotationAgentBridgeRef = useRef<AnnotationAgentBridge | null>(null)
+  const annotationAgentToolsRef = useRef<ToolSet | null>(null)
+  const annotationSyncPromiseRef = useRef<Promise<void> | null>(null)
   const bookCoverUrlRef = useRef<string | null>(null)
   const progressSaveTimerRef = useRef<number | null>(null)
   const readerResetIdRef = useRef(0)
@@ -873,6 +1039,14 @@ function ReaderWorkspace({
   const [searchScope, setSearchScope] = useState<'unit' | 'book'>('book')
   const [searchResults, setSearchResults] = useState<SearchItem[]>([])
   const [searchStatus, setSearchStatus] = useState(t('reader.searchUnavailable'))
+  const [annotations, setAnnotations] = useState<ReaderAnnotation[]>([])
+  const [annotationComposer, setAnnotationComposer] = useState<AnnotationComposerState | null>(null)
+  const [annotationSyncing, setAnnotationSyncing] = useState(false)
+  const [annotationSyncError, setAnnotationSyncError] = useState('')
+  const [annotationIdentityReady, setAnnotationIdentityReady] = useState(
+    () => !libraryBookId || !isLocalBookId(libraryBookId),
+  )
+  const [pendingAnnotationConfirmation, setPendingAnnotationConfirmation] = useState<PendingAnnotationConfirmation | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([])
@@ -893,6 +1067,187 @@ function ReaderWorkspace({
   }), [config.extensionCatalogJSON, config.extensionInstallations])
 
   configRef.current = config
+  annotationsRef.current = annotations
+
+  const annotationServerBookId = libraryBookId
+    ? isLocalBookId(libraryBookId)
+      ? libraryItem?.annotationBookId ?? libraryItem?.serverBookId ?? null
+      : libraryBookId
+    : null
+
+  const refreshAnnotations = useCallback(async () => {
+    if (!libraryBookId) {
+      annotationsRef.current = []
+      setAnnotations([])
+      return []
+    }
+    const items = await listAnnotations(libraryBookId)
+    annotationsRef.current = items
+    setAnnotations(items)
+    renderAnnotationMarks(readerRef.current, items)
+    return items
+  }, [libraryBookId])
+
+  const runAnnotationSync = useCallback(async () => {
+    if (!authenticated || !libraryBookId || !annotationServerBookId) return
+    if (isLocalBookId(libraryBookId) && !annotationIdentityReady) return
+    if (annotationSyncPromiseRef.current) return annotationSyncPromiseRef.current
+    const task = (async () => {
+      setAnnotationSyncing(true)
+      setAnnotationSyncError('')
+      try {
+        const items = await syncAnnotations(libraryBookId, annotationServerBookId)
+        annotationsRef.current = items
+        setAnnotations(items)
+        renderAnnotationMarks(readerRef.current, items)
+      } catch (error) {
+        setAnnotationSyncError(formatError(error))
+      } finally {
+        setAnnotationSyncing(false)
+      }
+    })()
+    annotationSyncPromiseRef.current = task
+    try {
+      await task
+    } finally {
+      if (annotationSyncPromiseRef.current === task) annotationSyncPromiseRef.current = null
+    }
+  }, [annotationIdentityReady, annotationServerBookId, authenticated, libraryBookId])
+
+  const createReaderAnnotation = useCallback(async (input: {
+    selection?: BookSelection
+    note?: string
+    source?: 'user' | 'ai'
+  }) => {
+    if (!libraryBookId) return null
+    const selection = input.selection ?? selectionRef.current
+    if (!selection) return null
+    const annotation = await createStoredAnnotation(libraryBookId, {
+      location: selection.range,
+      quote: selection.text,
+      note: input.note,
+      color: ANNOTATION_COLOR,
+      source: input.source ?? 'user',
+      serverBookId: annotationServerBookId,
+      data: {
+        anchorVersion: 1,
+        blockIds: selection.blockIds ?? [],
+      },
+    })
+    selectionRef.current = null
+    setAnnotationComposer(null)
+    readerRef.current?.clearSelection?.()
+    await refreshAnnotations()
+    void runAnnotationSync()
+    return annotation
+  }, [annotationServerBookId, libraryBookId, refreshAnnotations, runAnnotationSync])
+
+  const editReaderAnnotation = useCallback(async (id: string, input: { note?: string }) => {
+    if (!libraryBookId) return null
+    const annotation = await updateStoredAnnotation(libraryBookId, id, input)
+    await refreshAnnotations()
+    void runAnnotationSync()
+    return annotation
+  }, [libraryBookId, refreshAnnotations, runAnnotationSync])
+
+  const removeReaderAnnotation = useCallback(async (id: string) => {
+    if (!libraryBookId) return false
+    await deleteStoredAnnotation(libraryBookId, id)
+    setAnnotationComposer(null)
+    await refreshAnnotations()
+    void runAnnotationSync()
+    return true
+  }, [libraryBookId, refreshAnnotations, runAnnotationSync])
+
+  const requestAnnotationConfirmation = useCallback((title: string, description: string) => new Promise<boolean>(resolve => {
+    setPendingAnnotationConfirmation(current => {
+      current?.resolve(false)
+      return { title, description, resolve }
+    })
+  }), [])
+
+  annotationAgentBridgeRef.current = {
+    getSelection: () => selectionRef.current,
+    list: () => annotationsRef.current,
+    create: input => createReaderAnnotation(input),
+    update: editReaderAnnotation,
+    remove: removeReaderAnnotation,
+    confirm: requestAnnotationConfirmation,
+  }
+  if (!annotationAgentToolsRef.current) {
+    annotationAgentToolsRef.current = createAnnotationAgentTools(annotationAgentBridgeRef)
+  }
+
+  useEffect(() => {
+    selectionRef.current = null
+    setAnnotationComposer(null)
+    setAnnotationIdentityReady(!libraryBookId || !isLocalBookId(libraryBookId))
+    void refreshAnnotations()
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ bookKey?: string }>).detail
+      if (!detail?.bookKey || detail.bookKey === libraryBookId) void refreshAnnotations()
+    }
+    window.addEventListener('rebook:annotations-changed', changed)
+    return () => window.removeEventListener('rebook:annotations-changed', changed)
+  }, [libraryBookId, refreshAnnotations])
+
+  useEffect(() => {
+    if (authenticated && annotationServerBookId && annotationIdentityReady) void runAnnotationSync()
+  }, [annotationIdentityReady, annotationServerBookId, authenticated, runAnnotationSync])
+
+  useEffect(() => {
+    if (!authenticated || !libraryBookId || !isLocalBookId(libraryBookId)) return
+    let cancelled = false
+    setAnnotationIdentityReady(false)
+    setAnnotationSyncError('')
+    void getLocalBookAnnotationIdentity(libraryBookId).then(async identity => {
+      if (!identity) throw new Error(t('reader.annotationIdentityUnavailable'))
+      if (cancelled) return
+      const result = await apiRequest<{ id: string }>('/books/identity', {
+        method: 'POST',
+        json: identity,
+      })
+      if (cancelled) return
+      await updateLocalBookAnnotationIdentity(libraryBookId, result.id)
+      setLibraryItem(current => current ? { ...current, annotationBookId: result.id } : current)
+      setAnnotationIdentityReady(true)
+    }).catch(error => {
+      if (!cancelled) {
+        setAnnotationIdentityReady(false)
+        setAnnotationSyncError(formatError(error))
+      }
+    })
+    return () => { cancelled = true }
+  }, [authenticated, libraryBookId, t])
+
+  useEffect(() => {
+    if (!authenticated || !annotationServerBookId) return
+    const resume = () => {
+      if (document.visibilityState === 'visible') void runAnnotationSync()
+    }
+    window.addEventListener('online', resume)
+    document.addEventListener('visibilitychange', resume)
+    return () => {
+      window.removeEventListener('online', resume)
+      document.removeEventListener('visibilitychange', resume)
+    }
+  }, [annotationServerBookId, authenticated, runAnnotationSync])
+
+  useEffect(() => {
+    if (!libraryBookId || !isLocalBookId(libraryBookId)) return
+    const cloudSyncCompleted = () => {
+      void getLocalBook(libraryBookId).then(local => {
+        if (!local) return
+        setLibraryItem(local.item)
+      })
+    }
+    window.addEventListener('rebook:cloud-sync-completed', cloudSyncCompleted)
+    return () => window.removeEventListener('rebook:cloud-sync-completed', cloudSyncCompleted)
+  }, [libraryBookId])
+
+  useEffect(() => () => {
+    pendingAnnotationConfirmation?.resolve(false)
+  }, [pendingAnnotationConfirmation])
 
   // The reader chrome and book content share the same app-level theme.
   useEffect(() => {
@@ -1384,12 +1739,15 @@ function ReaderWorkspace({
         plugins.push(createAIChatExtension({
           model,
           system: () => buildStoryMemorySystemPrompt(configRef.current, language),
-          extraTools: () => STORY_MEMORY_ENABLED
-            ? createStoryMemoryTools(
-                readStoryMemoryToolConfig(configRef.current),
-                event => appendDebug('story memory tool', event),
-              )
-            : {},
+          extraTools: () => ({
+            ...(STORY_MEMORY_ENABLED
+              ? createStoryMemoryTools(
+                  readStoryMemoryToolConfig(configRef.current),
+                  event => appendDebug('story memory tool', event),
+                )
+              : {}),
+            ...(annotationAgentToolsRef.current ?? {}),
+          }),
           maxContentChars: () => Number(configRef.current.chatMaxContentChars) || Number(defaultConfig.chatMaxContentChars),
           maxContextChars: () => Math.max(Number(configRef.current.chatMaxContentChars) || Number(defaultConfig.chatMaxContentChars), 20000),
           onDocumentEdit: event => {
@@ -1429,6 +1787,7 @@ function ReaderWorkspace({
   }, [buildPlugins, appTheme])
 
   const wireReaderEvents = useCallback((reader: any) => {
+    reader.on('load', () => renderAnnotationMarks(reader, annotationsRef.current))
     reader.on('relocate', (event: any) => {
       setLocation(event)
       refreshTOC(reader, event)
@@ -1440,6 +1799,45 @@ function ReaderWorkspace({
       else void reader.goTo(event.href).catch((error: unknown) => appendDebug('link navigation failed', formatError(error)))
     })
     reader.on('block-window', (event: any) => appendDebug('block window', event))
+    reader.on('selection-change', (event: ReaderSelectionEvent) => {
+      if (!event.selection) {
+        setAnnotationComposer(current => current?.mode === 'edit' || current?.noteOpen ? current : null)
+        return
+      }
+      selectionRef.current = event.selection
+      const rects = event.clientRects
+      const rect = rects.at(-1)
+      const anchorTop = rects.length
+        ? Math.min(...rects.map(item => item.y))
+        : window.innerHeight / 2
+      const anchorBottom = rects.length
+        ? Math.max(...rects.map(item => item.y + item.height))
+        : window.innerHeight / 2
+      setAnnotationComposer({
+        mode: 'selection',
+        selection: event.selection,
+        quote: event.selection.text,
+        x: rect ? rect.x + rect.width / 2 : window.innerWidth / 2,
+        anchorTop,
+        anchorBottom,
+        note: '',
+        noteOpen: false,
+      })
+    })
+    reader.on('mark-activate', (event: { mark?: { id?: string }; clientX: number; clientY: number }) => {
+      const annotation = annotationsRef.current.find(item => item.id === event.mark?.id)
+      if (!annotation) return
+      setAnnotationComposer({
+        mode: 'edit',
+        annotationId: annotation.id,
+        quote: annotation.quote,
+        x: event.clientX,
+        anchorTop: event.clientY,
+        anchorBottom: event.clientY,
+        note: annotation.note ?? '',
+        noteOpen: true,
+      })
+    })
   }, [appendDebug, scheduleShelfProgress])
 
   const resetReader = useCallback(async (nextConfig: DemoConfig, reopen = currentFileRef.current) => {
@@ -2142,6 +2540,9 @@ function ReaderWorkspace({
               setSearchScope={setSearchScope}
               searchStatus={searchStatus}
               searchResults={searchResults}
+              annotations={annotations}
+              annotationSyncing={annotationSyncing}
+              annotationSyncError={annotationSyncError}
               onSetView={setSidebarView}
               onClose={() => setSidebarOpen(false)}
               onTogglePinned={toggleSidebarPinned}
@@ -2160,6 +2561,20 @@ function ReaderWorkspace({
                 void readerRef.current?.goTo?.(target)
                 if (window.innerWidth < 1024) setSidebarOpen(false)
               }}
+              onAnnotationNavigate={annotation => {
+                void navigateToAnnotation(readerRef.current, annotation)
+                if (window.innerWidth < 1024) setSidebarOpen(false)
+              }}
+              onAnnotationEdit={annotation => setAnnotationComposer({
+                mode: 'edit',
+                annotationId: annotation.id,
+                quote: annotation.quote,
+                x: Math.min(window.innerWidth - 24, 300),
+                anchorTop: 96,
+                anchorBottom: 96,
+                note: annotation.note ?? '',
+                noteOpen: true,
+              })}
             />
           </>
         )}
@@ -2279,6 +2694,181 @@ function ReaderWorkspace({
           onApply={() => void applyConfig()}
         />
       )}
+
+      {annotationComposer ? createPortal(
+        <AnnotationPopover
+          state={annotationComposer}
+          onChange={setAnnotationComposer}
+          onClose={() => setAnnotationComposer(null)}
+          onHighlight={() => void createReaderAnnotation({
+            selection: annotationComposer.selection,
+          })}
+          onSave={() => {
+            if (annotationComposer.mode === 'selection') {
+              void createReaderAnnotation({
+                selection: annotationComposer.selection,
+                note: annotationComposer.note,
+              })
+            } else if (annotationComposer.annotationId) {
+              void editReaderAnnotation(annotationComposer.annotationId, {
+                note: annotationComposer.note,
+              }).then(() => setAnnotationComposer(null))
+            }
+          }}
+          onDelete={annotationComposer.annotationId
+            ? () => void removeReaderAnnotation(annotationComposer.annotationId!)
+            : undefined}
+        />,
+        document.body,
+      ) : null}
+
+      {pendingAnnotationConfirmation ? createPortal(
+        <AnnotationConfirmation
+          request={pendingAnnotationConfirmation}
+          onResolve={approved => {
+            pendingAnnotationConfirmation.resolve(approved)
+            setPendingAnnotationConfirmation(null)
+          }}
+        />,
+        document.body,
+      ) : null}
+    </div>
+  )
+}
+
+function AnnotationPopover({
+  state,
+  onChange,
+  onClose,
+  onHighlight,
+  onSave,
+  onDelete,
+}: {
+  state: AnnotationComposerState
+  onChange(state: AnnotationComposerState): void
+  onClose(): void
+  onHighlight(): void
+  onSave(): void
+  onDelete?: () => void
+}) {
+  const { t } = useI18n()
+  const expanded = state.noteOpen || state.mode === 'edit'
+  const estimatedHeight = expanded ? 310 : 52
+  const estimatedWidth = expanded ? Math.min(360, window.innerWidth - 24) : 126
+  const viewportPadding = 12
+  const gap = 10
+  const left = Math.max(
+    estimatedWidth / 2 + viewportPadding,
+    Math.min(window.innerWidth - estimatedWidth / 2 - viewportPadding, state.x),
+  )
+  const availableBelow = window.innerHeight - state.anchorBottom - viewportPadding
+  const availableAbove = state.anchorTop - viewportPadding
+  const placeBelow = availableBelow >= estimatedHeight + gap || availableBelow >= availableAbove
+  const top = placeBelow
+    ? Math.max(viewportPadding, Math.min(window.innerHeight - estimatedHeight - viewportPadding, state.anchorBottom + gap))
+    : Math.max(estimatedHeight + viewportPadding, state.anchorTop - gap)
+  return (
+    <div
+      className={`fixed z-[120] -translate-x-1/2 border border-line bg-surface-raised shadow-dialog ${placeBelow ? '' : '-translate-y-full'} ${expanded ? 'w-[min(360px,calc(100vw-24px))] rounded-2xl' : 'w-max max-w-[calc(100vw-24px)] rounded-xl p-1.5'}`}
+      style={{ left, top }}
+      onPointerDown={event => event.preventDefault()}
+    >
+      {!expanded ? (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+            title={t('reader.highlight')}
+            aria-label={t('reader.highlight')}
+            onClick={onHighlight}
+          >
+            <Highlighter className="h-[18px] w-[18px] text-accent-text" />
+          </button>
+          <span className="mx-0.5 h-5 w-px bg-line" />
+          <button
+            className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+            type="button"
+            title={t('reader.addNote')}
+            aria-label={t('reader.addNote')}
+            onClick={() => onChange({ ...state, noteOpen: true })}
+          >
+            <MessageSquarePlus className="h-[18px] w-[18px]" />
+          </button>
+          <button className="ml-0.5 grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <div>
+          <header className="flex items-center gap-3 px-4 pb-3 pt-4">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent-text">
+              <StickyNote className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-ui-md font-semibold text-ink">
+                {state.mode === 'edit' ? t('reader.editAnnotation') : t('reader.addNote')}
+              </h3>
+              <p className="mt-0.5 text-ui-xs text-muted">{t('reader.annotationEditorHint')}</p>
+            </div>
+            <button className="grid h-8 w-8 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} onClick={onClose}>
+              <X className="h-4 w-4" />
+            </button>
+          </header>
+          {state.quote ? (
+            <blockquote className="mx-4 mb-3 line-clamp-3 rounded-xl border-l-2 border-accent bg-control px-3 py-2 text-ui-sm leading-relaxed text-muted-strong">
+              {state.quote}
+            </blockquote>
+          ) : null}
+          <div className="px-4">
+          <textarea
+            className="min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-ui-sm leading-relaxed text-ink outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/15"
+            value={state.note}
+            autoFocus
+            placeholder={t('reader.notePlaceholder')}
+            onPointerDown={event => event.stopPropagation()}
+            onChange={event => onChange({ ...state, note: event.target.value })}
+          />
+          </div>
+          <footer className="mt-3 flex items-center border-t border-line px-4 py-3">
+            {onDelete ? (
+              <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-ui-sm text-danger transition hover:bg-danger/10" type="button" onClick={onDelete}>
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('reader.deleteAnnotation')}
+              </button>
+            ) : null}
+            <div className="flex-1" />
+            <button className="h-9 rounded-lg px-3 text-ui-sm text-muted transition hover:bg-control hover:text-ink" type="button" onClick={onClose}>{t('common.cancel')}</button>
+            <button className={primaryButtonClass} type="button" onClick={onSave}>{t('reader.saveAnnotation')}</button>
+          </footer>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AnnotationConfirmation({
+  request,
+  onResolve,
+}: {
+  request: PendingAnnotationConfirmation
+  onResolve(approved: boolean): void
+}) {
+  const { t } = useI18n()
+  return (
+    <div className="fixed inset-x-0 bottom-6 z-[130] flex justify-center px-4">
+      <div className="w-full max-w-md rounded-2xl border border-line bg-surface-raised p-4 shadow-dialog">
+        <div className="flex gap-3">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-soft text-accent-text"><StickyNote className="h-4 w-4" /></div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-ui-md font-semibold text-ink">{request.title}</h3>
+            <p className="mt-1 text-ui-sm leading-relaxed text-muted">{request.description}</p>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="h-9 rounded-lg px-3 text-ui-sm text-muted hover:bg-control" type="button" onClick={() => onResolve(false)}>{t('common.cancel')}</button>
+          <button className={primaryButtonClass} type="button" onClick={() => onResolve(true)}>{t('reader.confirmAnnotationAction')}</button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -2510,6 +3100,9 @@ function ReaderSidebar({
   setSearchScope,
   searchStatus,
   searchResults,
+  annotations,
+  annotationSyncing,
+  annotationSyncError,
   onSetView,
   onClose,
   onTogglePinned,
@@ -2517,6 +3110,8 @@ function ReaderSidebar({
   onClearSearch,
   onSearchNavigate,
   onNavigate,
+  onAnnotationNavigate,
+  onAnnotationEdit,
 }: {
   items: readonly DemoTOCItem[]
   view: SidebarView
@@ -2532,6 +3127,9 @@ function ReaderSidebar({
   setSearchScope(value: 'unit' | 'book'): void
   searchStatus: string
   searchResults: SearchItem[]
+  annotations: ReaderAnnotation[]
+  annotationSyncing: boolean
+  annotationSyncError: string
   onSetView(view: SidebarView): void
   onClose(): void
   onTogglePinned(): void
@@ -2539,6 +3137,8 @@ function ReaderSidebar({
   onClearSearch(): void
   onSearchNavigate(item: SearchItem): void
   onNavigate(target: string): void
+  onAnnotationNavigate(annotation: ReaderAnnotation): void
+  onAnnotationEdit(annotation: ReaderAnnotation): void
 }) {
   const { t } = useI18n()
   const activePath = useMemo(() => findActiveTOCPath(items), [items])
@@ -2598,6 +3198,15 @@ function ReaderSidebar({
           <Search className="h-4 w-4" />
         </button>
         <button
+          className={sidebarToolButtonClass(view === 'annotations')}
+          type="button"
+          onClick={() => onSetView('annotations')}
+          title={t('reader.annotations')}
+          aria-pressed={view === 'annotations'}
+        >
+          <StickyNote className="h-4 w-4" />
+        </button>
+        <button
           className={sidebarToolButtonClass(view === 'toc')}
           type="button"
           onClick={() => onSetView('toc')}
@@ -2637,6 +3246,15 @@ function ReaderSidebar({
           onRun={onRunSearch}
           onClear={onClearSearch}
           onNavigate={onSearchNavigate}
+        />
+      ) : view === 'annotations' ? (
+        <AnnotationsPanel
+          annotations={annotations}
+          syncing={annotationSyncing}
+          syncError={annotationSyncError}
+          bookSummary={<SidebarBookSummary title={bookTitle} author={bookAuthor} format={bookFormat} coverUrl={coverUrl} />}
+          onNavigate={onAnnotationNavigate}
+          onEdit={onAnnotationEdit}
         />
       ) : (
         <>
@@ -2689,6 +3307,68 @@ function SidebarBookSummary({
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-muted" title={`${title}${author ? ` · ${author}` : ''}`}>
         <Info className="h-4 w-4" />
       </span>
+    </div>
+  )
+}
+
+function AnnotationsPanel({
+  annotations,
+  syncing,
+  syncError,
+  bookSummary,
+  onNavigate,
+  onEdit,
+}: {
+  annotations: ReaderAnnotation[]
+  syncing: boolean
+  syncError: string
+  bookSummary: ReactNode
+  onNavigate(annotation: ReaderAnnotation): void
+  onEdit(annotation: ReaderAnnotation): void
+}) {
+  const { t } = useI18n()
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {bookSummary}
+      <div className="flex items-center justify-between px-4 pb-2 text-ui-xs text-muted">
+        <span>{t('reader.annotationCount', { count: annotations.length })}</span>
+        <span className={syncError ? 'text-danger' : ''} title={syncError}>
+          {syncing ? t('reader.annotationsSyncing') : syncError ? t('reader.annotationsSyncFailed') : ''}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-2 pb-3">
+        {annotations.length ? annotations.map(annotation => (
+          <article
+            className="group mb-2 overflow-hidden rounded-xl border border-line bg-surface-raised transition hover:border-accent/40 hover:shadow-menu"
+            key={annotation.id}
+          >
+            <button
+              type="button"
+              className="w-full px-3 py-2.5 text-left"
+              onClick={() => onNavigate(annotation)}
+            >
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-[var(--ui-mark-annotation)]" />
+                <span className="text-ui-xs text-muted">{formatAnnotationLocation(annotation.location, t)}</span>
+              </div>
+              <p className="line-clamp-3 text-ui-sm leading-relaxed text-ink">{annotation.quote || t('reader.annotationNoQuote')}</p>
+              {annotation.note ? <p className="mt-2 line-clamp-3 border-l-2 border-accent pl-2 text-ui-sm text-muted-strong">{annotation.note}</p> : null}
+            </button>
+            <button
+              type="button"
+              className="mx-2 mb-2 rounded-lg px-2 py-1 text-ui-xs text-muted opacity-70 hover:bg-control hover:text-ink group-hover:opacity-100"
+              onClick={() => onEdit(annotation)}
+            >
+              {t('reader.editAnnotation')}
+            </button>
+          </article>
+        )) : (
+          <div className="px-4 py-10 text-center text-ui-sm text-muted">
+            <StickyNote className="mx-auto mb-3 h-6 w-6 opacity-60" />
+            <p>{t('reader.annotationsEmpty')}</p>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -5627,6 +6307,60 @@ function titleFromBookFileName(fileName: string, fallback: string): string {
 
 function flattenTOCItems(items: any[]): any[] {
   return items.flatMap(item => item.subitems?.length ? [item, ...flattenTOCItems(item.subitems)] : [item])
+}
+
+function renderAnnotationMarks(reader: any, annotations: readonly ReaderAnnotation[]) {
+  if (!reader) return
+  reader.clearMarks?.('annotation')
+  for (const annotation of annotations) {
+    if (annotation.deletedAt) continue
+    reader.setMark?.({
+      id: annotation.id,
+      kind: 'annotation',
+      location: annotation.location,
+      data: {
+        ...(annotation.data ?? {}),
+        color: ANNOTATION_COLOR,
+        note: annotation.note ?? '',
+        source: annotation.source,
+      },
+    })
+  }
+}
+
+async function navigateToAnnotation(reader: any, annotation: ReaderAnnotation) {
+  if (!reader) return
+  const position = getAnnotationStart(annotation.location)
+  if (position.type === 'reflowable') {
+    const target = position.blockId
+      ? `${position.sectionIndex}#${position.blockId}`
+      : position.sectionIndex
+    await reader.goTo?.(target)
+  } else if (position.type === 'text') {
+    await reader.goTo?.(position.sectionIndex)
+  } else {
+    await reader.goTo?.(position.pageIndex)
+  }
+  reader.clearMarks?.('annotation-focus')
+  reader.setMark?.({
+    id: `annotation-focus:${annotation.id}`,
+    kind: 'annotation-focus',
+    location: annotation.location,
+    data: { color: 'rgba(14, 165, 233, 0.30)', ...(annotation.data ?? {}) },
+  })
+  window.setTimeout(() => reader.removeMark?.(`annotation-focus:${annotation.id}`), 1800)
+}
+
+function getAnnotationStart(position: BookPosition) {
+  return 'start' in position ? position.start : position
+}
+
+function formatAnnotationLocation(position: BookPosition, t: Translate) {
+  const start = getAnnotationStart(position)
+  if (start.type === 'fixed' || start.type === 'image') {
+    return t('reader.annotationPage', { page: start.pageIndex + 1 })
+  }
+  return t('reader.annotationChapter', { chapter: start.sectionIndex + 1 })
 }
 
 function summarizeLocation(location: any) {
