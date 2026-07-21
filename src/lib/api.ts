@@ -103,6 +103,17 @@ export type SyncJob = {
   errorMessage: string | null
 }
 
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly data: unknown,
+  ) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
 export function setCsrfToken(value?: string | null) {
   csrfToken = value || ''
 }
@@ -153,7 +164,7 @@ export async function apiRequest<T>(
       data && typeof data === 'object' && 'error' in data
         ? String(data.error)
         : `HTTP ${response.status}`
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status, data)
   }
   return data as T
 }

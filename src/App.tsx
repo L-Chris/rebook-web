@@ -14,27 +14,30 @@ import { LanguageProvider, useI18n } from './features/i18n/LanguageContext'
 import ReaderWorkspace from './features/reader/ReaderWorkspace'
 import { ShelfPage } from './features/shelf/ShelfPage'
 import { ThemeProvider } from './features/theme/ThemeContext'
+import { PreferencesSyncProvider } from './features/preferences/PreferencesSyncContext'
 
 export default function App() {
   return (
     <ThemeProvider>
       <LanguageProvider>
         <AuthProvider>
-          <CloudSyncProvider>
-            <Routes>
-            <Route path="/" element={<ShelfPage />} />
-            <Route path="/extensions" element={<ExtensionStorePage />} />
-            <Route path="/extensions/publish" element={<ProtectedRoute><ExtensionPublisherPage /></ProtectedRoute>} />
-            <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
-            <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
-            <Route path="/verify-email" element={<VerifyEmailPage />} />
-            <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordPage /></GuestOnly>} />
-            <Route path="/reset-password" element={<ResetPasswordPage />} />
-            <Route path="/reader" element={<Navigate to="/" replace />} />
-            <Route path="/reader/:bookId" element={<ShelfReaderPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </CloudSyncProvider>
+          <PreferencesSyncProvider>
+            <CloudSyncProvider>
+              <Routes>
+                <Route path="/" element={<ShelfPage />} />
+                <Route path="/extensions" element={<ExtensionStorePage />} />
+                <Route path="/extensions/publish" element={<ProtectedRoute><ExtensionPublisherPage /></ProtectedRoute>} />
+                <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
+                <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
+                <Route path="/verify-email" element={<VerifyEmailPage />} />
+                <Route path="/forgot-password" element={<GuestOnly><ForgotPasswordPage /></GuestOnly>} />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route path="/reader" element={<Navigate to="/" replace />} />
+                <Route path="/reader/:bookId" element={<ShelfReaderPage />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </CloudSyncProvider>
+          </PreferencesSyncProvider>
         </AuthProvider>
       </LanguageProvider>
     </ThemeProvider>

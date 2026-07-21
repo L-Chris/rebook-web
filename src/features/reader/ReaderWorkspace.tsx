@@ -115,6 +115,7 @@ import {
   fetchExtensionMarketplaceCatalogJSON,
   isOfficialExtensionCatalogURL,
 } from '../../lib/extension-marketplace'
+import { notifyReaderConfigChanged, READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
 import { useAppTheme } from '../theme/ThemeContext'
 import { useAuth } from '../auth/AuthContext'
 import { CloudDriveSettings } from '../cloud-drive/CloudDrivePage'
@@ -132,6 +133,7 @@ import {
   type AppLanguage,
   type Translate,
 } from '../i18n/LanguageContext'
+import { usePreferenceSync } from '../preferences/PreferencesSyncContext'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
@@ -1464,6 +1466,20 @@ function ReaderWorkspace({
       }
     }
   }, [createDemoReader, wireReaderEvents])
+
+  useEffect(() => {
+    const syncStoredConfig = () => {
+      const next = loadReaderConfig()
+      const changedKeys = getChangedConfigKeys(configRef.current, next)
+      if (changedKeys.length === 0) return
+      configRef.current = next
+      setConfig(next)
+      if (!settingsOpen) setDraftConfig(next)
+      void resetReader(next)
+    }
+    window.addEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredConfig)
+    return () => window.removeEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredConfig)
+  }, [resetReader, settingsOpen])
 
   const toggleTranslationRuntime = async () => {
     const current = configRef.current
@@ -3984,6 +4000,7 @@ export function ReaderSettingsDialog(props: {
   onApply(): void
 }) {
   const { t } = useI18n()
+  const { status: preferenceSyncStatus } = usePreferenceSync()
   const sections: Array<{ id: SettingsSection; label: string }> = [
     { id: 'general', label: t('settings.general') },
     { id: 'font', label: t('settings.font') },
@@ -4042,7 +4059,10 @@ export function ReaderSettingsDialog(props: {
               onExecuteExtensionCommand={props.onExecuteExtensionCommand}
             />
           </div>
-          <div className="flex justify-end gap-2 border-t border-line p-4">
+          <div className="flex items-center gap-3 border-t border-line p-4">
+            <span className="mr-auto text-ui-sm text-muted">
+              {t(`settings.syncStatus.${preferenceSyncStatus}`)}
+            </span>
             {props.section === 'cloud' ? (
               <button className={primaryButtonClass} type="button" onClick={props.onClose}>{t('common.close')}</button>
             ) : (
@@ -4901,6 +4921,7 @@ export function loadReaderConfig(): DemoConfig {
 
 export function saveReaderConfig(config: DemoConfig) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(normalizeConfig(config)))
+  notifyReaderConfigChanged()
 }
 
 function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {

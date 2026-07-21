@@ -43,6 +43,7 @@ import {
 } from '../../lib/local-library'
 import { ensureReaderFontsLoaded } from '../../lib/reader-fonts'
 import { iconButtonClass, menuRowClass } from '../../lib/ui-classes'
+import { READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
 import {
   ReaderSettingsDialog,
   loadReaderConfig,
@@ -152,6 +153,14 @@ export function ShelfPage() {
     settingsConfig.sansSerifFont,
     settingsConfig.monospaceFont,
   ])
+
+  useEffect(() => {
+    const syncStoredConfig = () => {
+      if (!settingsOpen) setSettingsConfig(loadReaderConfig())
+    }
+    window.addEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredConfig)
+    return () => window.removeEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredConfig)
+  }, [settingsOpen])
 
   const openSettings = () => {
     setMenuOpen(false)

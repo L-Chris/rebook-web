@@ -154,6 +154,11 @@ const zhCNMessages = {
   'settings.overrideBookFontsDescription': '开启后忽略书籍自带字体，统一使用上面的设置',
   'settings.fontPreview': '字体预览',
   'settings.fontPreviewText': '阅读让思想抵达更远的地方。The quick brown fox jumps over the lazy dog.',
+  'settings.syncStatus.local': '设置仅保存在此设备',
+  'settings.syncStatus.loading': '正在加载云端设置…',
+  'settings.syncStatus.syncing': '正在同步设置…',
+  'settings.syncStatus.synced': '设置已同步',
+  'settings.syncStatus.offline': '暂时无法同步，联网后将重试',
 
   'reader.loadingBook': '正在加载书籍…',
   'reader.chooseBook': '请从书架选择一本书',
@@ -570,6 +575,11 @@ const enMessages: Record<MessageKey, string> = {
   'settings.overrideBookFontsDescription': 'Ignore embedded book fonts and use the selections above',
   'settings.fontPreview': 'Font preview',
   'settings.fontPreviewText': 'The quick brown fox jumps over the lazy dog. 阅读让思想抵达更远的地方。',
+  'settings.syncStatus.local': 'Settings are stored on this device',
+  'settings.syncStatus.loading': 'Loading cloud settings…',
+  'settings.syncStatus.syncing': 'Syncing settings…',
+  'settings.syncStatus.synced': 'Settings synced',
+  'settings.syncStatus.offline': 'Unable to sync; retrying when online',
 
   'reader.loadingBook': 'Loading book…',
   'reader.chooseBook': 'Choose a book from the shelf',

@@ -41,6 +41,7 @@ import {
   type ExtensionMarketplaceState,
 } from '../../lib/extension-marketplace'
 import { iconButtonClass, primaryButtonClass, toolbarButtonClass } from '../../lib/ui-classes'
+import { READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
 import { useI18n, type MessageKey, type Translate } from '../i18n/LanguageContext'
 
 type StoreFilter = 'all' | 'installed' | 'reader' | 'ai' | 'translation' | 'tts'
@@ -191,6 +192,12 @@ export function ExtensionStorePage() {
     if (initialCatalogLoadStarted.current) return
     initialCatalogLoadStarted.current = true
     void loadCatalog()
+  }, [])
+
+  useEffect(() => {
+    const syncStoredState = () => setState(loadExtensionMarketplaceState())
+    window.addEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredState)
+    return () => window.removeEventListener(READER_CONFIG_CHANGED_EVENT, syncStoredState)
   }, [])
 
   return (

@@ -13,6 +13,7 @@ import {
   type RebookExtensionInstallation,
 } from 'rebook'
 import { apiUrl } from './api'
+import { notifyReaderConfigChanged } from './preference-events'
 
 export const READER_CONFIG_STORAGE_KEY = 'rebook-web-config'
 export const AI_CHAT_DEFAULTS_VERSION = 1
@@ -73,6 +74,7 @@ export function saveExtensionMarketplaceState(state: ExtensionMarketplaceState):
     ...stored,
     ...normalizeState(state),
   }))
+  notifyReaderConfigChanged()
 }
 
 export function parseExtensionMarketplaceCatalog(state: ExtensionMarketplaceState): ExtensionCatalogResult {
