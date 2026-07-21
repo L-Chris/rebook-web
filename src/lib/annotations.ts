@@ -34,6 +34,7 @@ interface AnnotationSyncResponse {
   hasMore: boolean
   items: ServerAnnotation[]
   conflicts: ServerAnnotation[]
+  acknowledgedIds?: string[]
 }
 
 interface ServerAnnotation {
@@ -143,6 +144,7 @@ export async function syncAnnotations(bookKey: string, serverBookId: string): Pr
   while (hasMore) {
     const local = await getBookRecords(bookKey)
     const dirty = local.filter(record => record.dirty).slice(0, 100)
+    const previousCursor = cursor
     const response = await apiRequest<AnnotationSyncResponse>(
       `/books/${encodeURIComponent(serverBookId)}/annotations/sync`,
       {
@@ -174,10 +176,22 @@ export async function syncAnnotations(bookKey: string, serverBookId: string): Pr
       if (conflictIds.has(item.id)) continue
       await putRecord(fromServer(bookKey, serverBookId, item))
     }
+    const acknowledgedIds = new Set(response.acknowledgedIds ?? [])
+    for (const record of dirty) {
+      if (record.deletedAt && acknowledgedIds.has(record.id)) {
+        await removeStoredRecord(record.storageKey)
+      }
+    }
 
     cursor = response.cursor
     await setMeta(cursorKey, cursor)
-    const remainingDirty = (await getBookRecords(bookKey)).some(record => record.dirty)
+    const remaining = await getBookRecords(bookKey)
+    const remainingDirtyIds = new Set(remaining.filter(record => record.dirty).map(record => record.id))
+    const remainingDirty = remainingDirtyIds.size > 0
+    const madeProgress = cursor !== previousCursor || dirty.some(record => !remainingDirtyIds.has(record.id))
+    if ((response.hasMore || remainingDirty) && !madeProgress) {
+      throw new Error('Annotation sync stopped because the server made no progress')
+    }
     hasMore = response.hasMore || remainingDirty
   }
 
@@ -249,6 +263,11 @@ async function getBookRecords(bookKey: string): Promise<StoredAnnotation[]> {
 async function putRecord(record: StoredAnnotation): Promise<void> {
   const database = await openDatabase()
   await transactionPromise(database, ANNOTATION_STORE, 'readwrite', store => store.put(record))
+}
+
+async function removeStoredRecord(key: string): Promise<void> {
+  const database = await openDatabase()
+  await transactionPromise(database, ANNOTATION_STORE, 'readwrite', store => store.delete(key))
 }
 
 async function getMeta(key: string): Promise<string | undefined> {

@@ -2639,7 +2639,7 @@ function ReaderWorkspace({
                   return []
                 })
               }}
-              setWidth={value => {
+              onWidthCommit={value => {
                 const width = clampPanelWidth(value)
                 setChatPanelWidth(width)
                 const next = { ...configRef.current, chatPanelWidth: String(width) }
@@ -2753,8 +2753,51 @@ function AnnotationPopover({
 }) {
   const { t } = useI18n()
   const expanded = state.noteOpen || state.mode === 'edit'
-  const estimatedHeight = expanded ? 310 : 52
-  const estimatedWidth = expanded ? Math.min(360, window.innerWidth - 24) : 126
+
+  if (expanded) {
+    return (
+      <div
+        className="fixed inset-x-3 bottom-3 z-[120] mx-auto w-[min(760px,calc(100vw-24px))] overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-dialog sm:bottom-5"
+        onPointerDown={event => event.preventDefault()}
+      >
+        <button
+          className="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-control hover:text-ink"
+          type="button"
+          title={t('common.close')}
+          aria-label={t('common.close')}
+          onClick={onClose}
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className="flex items-start gap-3 px-5 pb-4 pt-5 pr-14">
+          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent-text">
+            <StickyNote className="h-4 w-4" />
+          </span>
+          <textarea
+            className="max-h-[min(42dvh,320px)] min-h-36 w-full resize-none bg-transparent py-1 text-ui-md leading-relaxed text-ink outline-none placeholder:text-muted"
+            value={state.note}
+            autoFocus
+            placeholder={t('reader.notePlaceholder')}
+            onPointerDown={event => event.stopPropagation()}
+            onChange={event => onChange({ ...state, note: event.target.value })}
+          />
+        </div>
+        <footer className="flex min-h-16 items-center border-t border-line px-5 py-3">
+          {onDelete ? (
+            <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-ui-sm text-danger transition hover:bg-danger/10" type="button" onClick={onDelete}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('reader.deleteAnnotation')}
+            </button>
+          ) : null}
+          <div className="flex-1" />
+          <button className={primaryButtonClass} type="button" onClick={onSave}>{t('reader.saveAnnotation')}</button>
+        </footer>
+      </div>
+    )
+  }
+
+  const estimatedHeight = 52
+  const estimatedWidth = 126
   const viewportPadding = 12
   const gap = 10
   const left = Math.max(
@@ -2769,79 +2812,34 @@ function AnnotationPopover({
     : Math.max(estimatedHeight + viewportPadding, state.anchorTop - gap)
   return (
     <div
-      className={`fixed z-[120] -translate-x-1/2 border border-line bg-surface-raised shadow-dialog ${placeBelow ? '' : '-translate-y-full'} ${expanded ? 'w-[min(360px,calc(100vw-24px))] rounded-2xl' : 'w-max max-w-[calc(100vw-24px)] rounded-xl p-1.5'}`}
+      className={`fixed z-[120] w-max max-w-[calc(100vw-24px)] -translate-x-1/2 rounded-xl border border-line bg-surface-raised p-1.5 shadow-dialog ${placeBelow ? '' : '-translate-y-full'}`}
       style={{ left, top }}
       onPointerDown={event => event.preventDefault()}
     >
-      {!expanded ? (
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
-            title={t('reader.highlight')}
-            aria-label={t('reader.highlight')}
-            onClick={onHighlight}
-          >
-            <Highlighter className="h-[18px] w-[18px] text-accent-text" />
-          </button>
-          <span className="mx-0.5 h-5 w-px bg-line" />
-          <button
-            className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
-            type="button"
-            title={t('reader.addNote')}
-            aria-label={t('reader.addNote')}
-            onClick={() => onChange({ ...state, noteOpen: true })}
-          >
-            <MessageSquarePlus className="h-[18px] w-[18px]" />
-          </button>
-          <button className="ml-0.5 grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}>
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : (
-        <div>
-          <header className="flex items-center gap-3 px-4 pb-3 pt-4">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent-text">
-              <StickyNote className="h-4 w-4" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-ui-md font-semibold text-ink">
-                {state.mode === 'edit' ? t('reader.editAnnotation') : t('reader.addNote')}
-              </h3>
-              <p className="mt-0.5 text-ui-xs text-muted">{t('reader.annotationEditorHint')}</p>
-            </div>
-            <button className="grid h-8 w-8 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} onClick={onClose}>
-              <X className="h-4 w-4" />
-            </button>
-          </header>
-          {state.quote ? (
-            <blockquote className="mx-4 mb-3 line-clamp-3 rounded-xl border-l-2 border-accent bg-control px-3 py-2 text-ui-sm leading-relaxed text-muted-strong">
-              {state.quote}
-            </blockquote>
-          ) : null}
-          <div className="px-4">
-          <textarea
-            className="min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-ui-sm leading-relaxed text-ink outline-none transition placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent/15"
-            value={state.note}
-            autoFocus
-            placeholder={t('reader.notePlaceholder')}
-            onPointerDown={event => event.stopPropagation()}
-            onChange={event => onChange({ ...state, note: event.target.value })}
-          />
-          </div>
-          <footer className="mt-3 flex items-center border-t border-line px-4 py-3">
-            {onDelete ? (
-              <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-ui-sm text-danger transition hover:bg-danger/10" type="button" onClick={onDelete}>
-                <Trash2 className="h-3.5 w-3.5" />
-                {t('reader.deleteAnnotation')}
-              </button>
-            ) : null}
-            <div className="flex-1" />
-            <button className="h-9 rounded-lg px-3 text-ui-sm text-muted transition hover:bg-control hover:text-ink" type="button" onClick={onClose}>{t('common.cancel')}</button>
-            <button className={primaryButtonClass} type="button" onClick={onSave}>{t('reader.saveAnnotation')}</button>
-          </footer>
-        </div>
-      )}
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+          title={t('reader.highlight')}
+          aria-label={t('reader.highlight')}
+          onClick={onHighlight}
+        >
+          <Highlighter className="h-[18px] w-[18px] text-accent-text" />
+        </button>
+        <span className="mx-0.5 h-5 w-px bg-line" />
+        <button
+          className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+          type="button"
+          title={t('reader.addNote')}
+          aria-label={t('reader.addNote')}
+          onClick={() => onChange({ ...state, noteOpen: true })}
+        >
+          <MessageSquarePlus className="h-[18px] w-[18px]" />
+        </button>
+        <button className="ml-0.5 grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}>
+          <X className="h-4 w-4" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -3535,15 +3533,31 @@ function isDemoTOCItemDisabled(item: DemoTOCItem): boolean {
 function RightPanel(props: {
   panel: Panel
   width: number
-  setWidth(value: number): void
+  onWidthCommit(value: number): void
   onClose(): void
   onClearChat?: () => void
   children: React.ReactNode
 }) {
   const { t } = useI18n()
-  const dragRef = useRef<{ right: number } | null>(null)
+  const panelRef = useRef<HTMLElement | null>(null)
+  const dragRef = useRef<{ right: number; width: number } | null>(null)
+
+  useEffect(() => {
+    if (!dragRef.current && panelRef.current) {
+      panelRef.current.style.width = `${props.width}px`
+    }
+  }, [props.width])
+
+  const finishResize = () => {
+    const drag = dragRef.current
+    if (!drag) return
+    dragRef.current = null
+    props.onWidthCommit(drag.width)
+  }
+
   return (
     <aside
+      ref={panelRef}
       className="absolute inset-y-0 right-0 z-70 max-w-[92vw] shrink-0 border-l border-line bg-surface/92 shadow-dialog backdrop-blur-xl lg:relative lg:z-auto lg:shadow-none"
       style={{ width: props.width }}
     >
@@ -3551,16 +3565,20 @@ function RightPanel(props: {
         <div
           className="absolute inset-y-0 left-0 z-10 hidden w-2 cursor-col-resize hover:bg-accent-soft lg:block"
           onPointerDown={event => {
-            dragRef.current = { right: event.currentTarget.parentElement!.getBoundingClientRect().right }
+            dragRef.current = {
+              right: event.currentTarget.parentElement!.getBoundingClientRect().right,
+              width: props.width,
+            }
             event.currentTarget.setPointerCapture(event.pointerId)
           }}
           onPointerMove={event => {
-            if (!dragRef.current) return
-            props.setWidth(dragRef.current.right - event.clientX)
+            const drag = dragRef.current
+            if (!drag || !panelRef.current) return
+            drag.width = clampPanelWidth(drag.right - event.clientX)
+            panelRef.current.style.width = `${drag.width}px`
           }}
-          onPointerUp={() => {
-            dragRef.current = null
-          }}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
         />
       )}
       <div className="flex h-full min-h-0 flex-col">
@@ -5588,7 +5606,13 @@ function ProgressBar({ value }: { value: number }) {
 
 function getChangedConfigKeys(previous: DemoConfig, next: DemoConfig): Array<keyof DemoConfig> {
   return (Object.keys(next) as Array<keyof DemoConfig>)
-    .filter(key => !Object.is(previous[key], next[key]))
+    .filter(key => !configValuesEqual(previous[key], next[key]))
+}
+
+function configValuesEqual(previous: DemoConfig[keyof DemoConfig], next: DemoConfig[keyof DemoConfig]): boolean {
+  if (Object.is(previous, next)) return true
+  if (typeof previous !== 'object' || previous === null || typeof next !== 'object' || next === null) return false
+  return JSON.stringify(previous) === JSON.stringify(next)
 }
 
 export function loadReaderConfig(): DemoConfig {
