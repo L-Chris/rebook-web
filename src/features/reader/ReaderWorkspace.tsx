@@ -20,6 +20,7 @@ import {
   LogOut,
   Maximize2,
   Menu,
+  MessageCircleQuestion,
   MessageSquarePlus,
   MessageSquareText,
   Minimize2,
@@ -243,6 +244,15 @@ interface ChatReference {
   excerpt?: string
 }
 
+interface ChatSubmission {
+  content: string
+  displayContent?: string
+  attachments?: ChatAttachment[]
+  references?: ChatReference[]
+  current?: ReturnType<typeof getCurrentChatContext>
+  clearComposer?: boolean
+}
+
 interface SearchItem {
   unitIndex: number
   unitId: string | number
@@ -278,13 +288,30 @@ interface PendingAnnotationConfirmation {
   resolve(approved: boolean): void
 }
 
+const AI_CONFIRM_TITLE_KEY = {
+  create: 'reader.aiConfirmTitle.create',
+  update: 'reader.aiConfirmTitle.update',
+  delete: 'reader.aiConfirmTitle.delete',
+} as const
+
+const AI_CONFIRM_DESCRIPTION_KEY = {
+  create: 'reader.aiConfirmDescription.create',
+  update: 'reader.aiConfirmDescription.update',
+  delete: 'reader.aiConfirmDescription.delete',
+} as const
+
+interface AnnotationConfirmationRequest {
+  kind: 'create' | 'update' | 'delete'
+  note?: string
+}
+
 interface AnnotationAgentBridge {
   getSelection(): BookSelection | null
   list(): ReaderAnnotation[]
   create(input: { note?: string; source: 'ai' }): Promise<ReaderAnnotation | null>
   update(id: string, input: { note?: string }): Promise<ReaderAnnotation | null>
   remove(id: string): Promise<boolean>
-  confirm(title: string, description: string): Promise<boolean>
+  confirm(request: AnnotationConfirmationRequest): Promise<boolean>
 }
 
 type DemoTOCItem = (TOCViewItem | TOCItem) & {
@@ -373,7 +400,13 @@ const MAX_SEARCH_RESULTS = 80
 const MAX_CHAT_REFERENCE_OPTIONS = 120
 const MAX_CHAT_REFERENCE_SUGGESTIONS = 8
 const MAX_CHAT_REFERENCE_EXCERPT = 220
+const MAX_EXPLAIN_SELECTION_CHARS = 2000
+const MAX_EXPLAIN_PARAGRAPH_CHARS = 4000
 const ANNOTATION_COLOR = 'rgba(96, 165, 250, 0.28)'
+// Temporary mark painted over the active selection while the note composer is
+// open: focusing the textarea collapses the native selection, so this keeps
+// the annotated text visually highlighted until save/close.
+const PENDING_ANNOTATION_MARK_ID = 'annotation-pending'
 const READER_SIDEBAR_PINNED_STORAGE_KEY = 'rebook-reader-sidebar-pinned'
 const STORY_MEMORY_ENABLED = import.meta.env.DEV
 const configuredRebookServiceUrl = String(import.meta.env.VITE_REBOOK_SERVICE_URL ?? '').trim()
@@ -703,7 +736,7 @@ function createAnnotationAgentTools(bridgeRef: { current: AnnotationAgentBridge 
       execute: async input => {
         const bridge = bridgeRef.current
         if (!bridge?.getSelection()) return { ok: false, error: '当前没有选区。' }
-        const approved = await bridge.confirm('AI 请求创建批注', input.note || '为当前选中的原文添加高亮')
+        const approved = await bridge.confirm({ kind: 'create', note: input.note })
         if (!approved) return { ok: false, cancelled: true }
         const annotation = await bridge.create({ ...input, source: 'ai' })
         return annotation ? { ok: true, annotation: compactAnnotationForAgent(annotation) } : { ok: false }
@@ -723,7 +756,7 @@ function createAnnotationAgentTools(bridgeRef: { current: AnnotationAgentBridge 
       execute: async input => {
         const bridge = bridgeRef.current
         if (!bridge) return { ok: false }
-        const approved = await bridge.confirm('AI 请求修改批注', input.note || '修改高亮样式')
+        const approved = await bridge.confirm({ kind: 'update', note: input.note })
         if (!approved) return { ok: false, cancelled: true }
         const annotation = await bridge.update(input.annotationId, input)
         return annotation ? { ok: true, annotation: compactAnnotationForAgent(annotation) } : { ok: false, error: '批注不存在。' }
@@ -740,7 +773,7 @@ function createAnnotationAgentTools(bridgeRef: { current: AnnotationAgentBridge 
       execute: async input => {
         const bridge = bridgeRef.current
         if (!bridge) return { ok: false }
-        const approved = await bridge.confirm('AI 请求删除批注', '删除后会同步到其他设备。')
+        const approved = await bridge.confirm({ kind: 'delete' })
         if (!approved) return { ok: false, cancelled: true }
         return { ok: await bridge.remove(input.annotationId) }
       },
@@ -991,6 +1024,7 @@ function ReaderWorkspace({
 }: ReaderWorkspaceProps) {
   const { language, t } = useI18n()
   const viewerRef = useRef<HTMLDivElement | null>(null)
+  const shellRef = useRef<HTMLDivElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const readerRef = useRef<any>(null)
   const bookRef = useRef<any>(null)
@@ -1159,12 +1193,41 @@ function ReaderWorkspace({
     return true
   }, [libraryBookId, refreshAnnotations, runAnnotationSync])
 
-  const requestAnnotationConfirmation = useCallback((title: string, description: string) => new Promise<boolean>(resolve => {
-    setPendingAnnotationConfirmation(current => {
-      current?.resolve(false)
-      return { title, description, resolve }
+  const requestAnnotationConfirmation = useCallback((request: AnnotationConfirmationRequest) => {
+    const title = t(AI_CONFIRM_TITLE_KEY[request.kind])
+    const description = request.note?.trim() || t(AI_CONFIRM_DESCRIPTION_KEY[request.kind])
+    return new Promise<boolean>(resolve => {
+      setPendingAnnotationConfirmation(current => {
+        current?.resolve(false)
+        return { title, description, resolve }
+      })
     })
-  }), [])
+  }, [t])
+
+  // Keep the selected text highlighted while the note composer is open: the
+  // native selection collapses as soon as the textarea takes focus, so paint a
+  // temporary annotation mark over the same range. Saving replaces it with the
+  // real annotation mark (renderAnnotationMarks clears kind 'annotation');
+  // closing without saving just removes it. blockIds must be passed like real
+  // annotations do, otherwise only the block containing the range start is
+  // painted for multi-paragraph selections.
+  const pendingAnnotationSelection = annotationComposer?.mode === 'selection' && annotationComposer.noteOpen
+    ? annotationComposer.selection ?? null
+    : null
+  useEffect(() => {
+    const reader = readerRef.current
+    if (!reader || !pendingAnnotationSelection) return
+    reader.setMark?.({
+      id: PENDING_ANNOTATION_MARK_ID,
+      kind: 'annotation',
+      location: pendingAnnotationSelection.range,
+      data: {
+        color: ANNOTATION_COLOR,
+        blockIds: pendingAnnotationSelection.blockIds ?? [],
+      },
+    })
+    return () => reader.removeMark?.(PENDING_ANNOTATION_MARK_ID)
+  }, [pendingAnnotationSelection])
 
   annotationAgentBridgeRef.current = {
     getSelection: () => selectionRef.current,
@@ -2273,24 +2336,16 @@ function ReaderWorkspace({
     }
   }
 
-  const sendChatMessage = async () => {
-    const rawContent = chatInput.trim()
-    const commandResult = resolveChatCommand(rawContent, language)
-    const content = buildChatMessageContentWithReferences(commandResult?.prompt ?? rawContent, chatReferences, t, language)
-    const attachments = chatAttachments
-    const references = chatReferences
+  const submitChatMessage = async ({
+    content,
+    displayContent,
+    attachments = [],
+    references = [],
+    current: currentOverride,
+    clearComposer = false,
+  }: ChatSubmission) => {
     const aiChat = bookRef.current?.aiChat
-    if ((!rawContent && !attachments.length && !references.length) || chatBusy) return
-    if (commandResult?.error && !attachments.length) {
-      const nextMessages: ChatMessage[] = [
-        ...chatMessages.filter(message => !message.pending),
-        { role: 'user', content: rawContent, displayContent: rawContent, references },
-        { role: 'assistant', content: commandResult.error },
-      ]
-      setChatMessages(nextMessages)
-      setChatInput(commandResult.insertText ?? rawContent)
-      return
-    }
+    if ((!content.trim() && !attachments.length && !references.length) || chatBusy) return
     if (!aiChat) {
       setChatMessages(messages => [...messages, {
         role: 'assistant',
@@ -2304,18 +2359,20 @@ function ReaderWorkspace({
       {
         role: 'user',
         content: content || t('reader.analyzeImages'),
-        displayContent: commandResult || references.length ? rawContent : undefined,
+        displayContent,
         attachments,
         references,
       },
     ]
     setChatMessages([...nextMessages, { role: 'assistant', content: '', pending: true }])
-    setChatInput('')
-    setChatAttachments([])
-    setChatReferences([])
+    if (clearComposer) {
+      setChatInput('')
+      setChatAttachments([])
+      setChatReferences([])
+    }
     setChatBusy(true)
     try {
-      const current = getCurrentChatContext(readerRef.current, bookRef.current)
+      const current = currentOverride ?? getCurrentChatContext(readerRef.current, bookRef.current)
       const askOptions = {
         messages: nextMessages.map(message => toAIChatMessage(message, t)),
         currentUnitIndex: current.unitIndex,
@@ -2354,6 +2411,48 @@ function ReaderWorkspace({
     } finally {
       setChatBusy(false)
     }
+  }
+
+  const sendChatMessage = async () => {
+    const rawContent = chatInput.trim()
+    const commandResult = resolveChatCommand(rawContent, language)
+    const attachments = chatAttachments
+    const references = chatReferences
+    if ((!rawContent && !attachments.length && !references.length) || chatBusy) return
+    if (commandResult?.error && !attachments.length) {
+      const nextMessages: ChatMessage[] = [
+        ...chatMessages.filter(message => !message.pending),
+        { role: 'user', content: rawContent, displayContent: rawContent, references },
+        { role: 'assistant', content: commandResult.error },
+      ]
+      setChatMessages(nextMessages)
+      setChatInput(commandResult.insertText ?? rawContent)
+      return
+    }
+
+    await submitChatMessage({
+      content: buildChatMessageContentWithReferences(commandResult?.prompt ?? rawContent, references, t, language),
+      displayContent: commandResult || references.length ? rawContent : undefined,
+      attachments,
+      references,
+      clearComposer: true,
+    })
+  }
+
+  const explainSelection = async (selection: BookSelection) => {
+    setActivePanel('chat')
+    setAnnotationComposer(null)
+    selectionRef.current = null
+    readerRef.current?.clearSelection?.()
+
+    const request = await buildSelectionExplainRequest({
+      selection,
+      reader: readerRef.current,
+      book: bookRef.current,
+      t,
+      language,
+    })
+    await submitChatMessage(request)
   }
 
   const addChatImages = async (files: FileList | File[]) => {
@@ -2513,6 +2612,7 @@ function ReaderWorkspace({
 
   return (
     <div
+      ref={shellRef}
       className="reader-shell flex h-full min-h-0 flex-col"
       data-reader-theme={appTheme}
     >
@@ -2703,6 +2803,10 @@ function ReaderWorkspace({
           onHighlight={() => void createReaderAnnotation({
             selection: annotationComposer.selection,
           })}
+          onExplain={config.chat && annotationComposer.selection
+            ? () => void explainSelection(annotationComposer.selection!)
+            : undefined}
+          explainDisabled={chatBusy}
           onSave={() => {
             if (annotationComposer.mode === 'selection') {
               void createReaderAnnotation({
@@ -2719,7 +2823,7 @@ function ReaderWorkspace({
             ? () => void removeReaderAnnotation(annotationComposer.annotationId!)
             : undefined}
         />,
-        document.body,
+        shellRef.current ?? document.body,
       ) : null}
 
       {pendingAnnotationConfirmation ? createPortal(
@@ -2730,116 +2834,225 @@ function ReaderWorkspace({
             setPendingAnnotationConfirmation(null)
           }}
         />,
-        document.body,
+        shellRef.current ?? document.body,
       ) : null}
     </div>
   )
 }
 
-function AnnotationPopover({
-  state,
-  onChange,
-  onClose,
-  onHighlight,
-  onSave,
-  onDelete,
-}: {
+const ANCHORED_GAP = 10
+const ANCHORED_VIEWPORT_PADDING = 12
+
+// Positions a floating element next to a selection/mark anchor. Measures the
+// real element after mount (no hardcoded size estimates), flips above/below
+// based on available space, clamps inside the viewport, and reports where the
+// caret should sit so it keeps pointing at the anchor.
+function useAnchoredPosition(x: number, anchorTop: number, anchorBottom: number, recheckKey: unknown = 0) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [layout, setLayout] = useState<{
+    style: CSSProperties
+    placement: 'above' | 'below'
+    arrowLeft: number
+  }>(() => ({ style: { visibility: 'hidden' }, placement: 'below', arrowLeft: 0 }))
+
+  useLayoutEffect(() => {
+    const update = () => {
+      const element = ref.current
+      if (!element) return
+      const rect = element.getBoundingClientRect()
+      const availableBelow = window.innerHeight - anchorBottom - ANCHORED_VIEWPORT_PADDING
+      const availableAbove = anchorTop - ANCHORED_VIEWPORT_PADDING
+      const placement = availableBelow >= rect.height + ANCHORED_GAP || availableBelow >= availableAbove
+        ? 'below'
+        : 'above'
+      const idealTop = placement === 'below'
+        ? anchorBottom + ANCHORED_GAP
+        : anchorTop - ANCHORED_GAP - rect.height
+      const top = Math.max(
+        ANCHORED_VIEWPORT_PADDING,
+        Math.min(window.innerHeight - rect.height - ANCHORED_VIEWPORT_PADDING, idealTop),
+      )
+      const center = Math.max(
+        rect.width / 2 + ANCHORED_VIEWPORT_PADDING,
+        Math.min(window.innerWidth - rect.width / 2 - ANCHORED_VIEWPORT_PADDING, x),
+      )
+      const arrowLeft = Math.max(14, Math.min(rect.width - 14, x - (center - rect.width / 2)))
+      setLayout({ placement, arrowLeft, style: { left: center, top, visibility: 'visible' } })
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [x, anchorTop, anchorBottom, recheckKey])
+
+  return { ref, ...layout }
+}
+
+function PopoverCaret({ placement, arrowLeft }: { placement: 'above' | 'below'; arrowLeft: number }) {
+  return (
+    <span
+      aria-hidden
+      className={`absolute h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-line bg-surface-raised ${
+        placement === 'below' ? '-top-[5px] border-l border-t' : '-bottom-[5px] border-b border-r'
+      }`}
+      style={{ left: arrowLeft }}
+    />
+  )
+}
+
+interface AnnotationPopoverProps {
   state: AnnotationComposerState
   onChange(state: AnnotationComposerState): void
   onClose(): void
   onHighlight(): void
+  onExplain?: () => void
+  explainDisabled?: boolean
   onSave(): void
   onDelete?: () => void
-}) {
+}
+
+function AnnotationPopover(props: AnnotationPopoverProps) {
+  const expanded = props.state.noteOpen || props.state.mode === 'edit'
+  return expanded ? <NoteComposer {...props} /> : <SelectionToolbar {...props} />
+}
+
+function SelectionToolbar({
+  state,
+  onChange,
+  onClose,
+  onHighlight,
+  onExplain,
+  explainDisabled = false,
+}: AnnotationPopoverProps) {
   const { t } = useI18n()
-  const expanded = state.noteOpen || state.mode === 'edit'
+  const anchored = useAnchoredPosition(state.x, state.anchorTop, state.anchorBottom, onExplain ? 1 : 0)
 
-  if (expanded) {
-    return (
-      <div
-        className="fixed inset-x-3 bottom-3 z-[120] mx-auto w-[min(760px,calc(100vw-24px))] overflow-hidden rounded-2xl border border-line bg-surface-raised shadow-dialog sm:bottom-5"
-        onPointerDown={event => event.preventDefault()}
-      >
-        <button
-          className="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-control hover:text-ink"
-          type="button"
-          title={t('common.close')}
-          aria-label={t('common.close')}
-          onClick={onClose}
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <div className="flex items-start gap-3 px-5 pb-4 pt-5 pr-14">
-          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent-text">
-            <StickyNote className="h-4 w-4" />
-          </span>
-          <textarea
-            className="max-h-[min(42dvh,320px)] min-h-36 w-full resize-none bg-transparent py-1 text-ui-md leading-relaxed text-ink outline-none placeholder:text-muted"
-            value={state.note}
-            autoFocus
-            placeholder={t('reader.notePlaceholder')}
-            onPointerDown={event => event.stopPropagation()}
-            onChange={event => onChange({ ...state, note: event.target.value })}
-          />
-        </div>
-        <footer className="flex min-h-16 items-center border-t border-line px-5 py-3">
-          {onDelete ? (
-            <button className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-ui-sm text-danger transition hover:bg-danger/10" type="button" onClick={onDelete}>
-              <Trash2 className="h-3.5 w-3.5" />
-              {t('reader.deleteAnnotation')}
-            </button>
-          ) : null}
-          <div className="flex-1" />
-          <button className={primaryButtonClass} type="button" onClick={onSave}>{t('reader.saveAnnotation')}</button>
-        </footer>
-      </div>
-    )
-  }
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
 
-  const estimatedHeight = 52
-  const estimatedWidth = 126
-  const viewportPadding = 12
-  const gap = 10
-  const left = Math.max(
-    estimatedWidth / 2 + viewportPadding,
-    Math.min(window.innerWidth - estimatedWidth / 2 - viewportPadding, state.x),
-  )
-  const availableBelow = window.innerHeight - state.anchorBottom - viewportPadding
-  const availableAbove = state.anchorTop - viewportPadding
-  const placeBelow = availableBelow >= estimatedHeight + gap || availableBelow >= availableAbove
-  const top = placeBelow
-    ? Math.max(viewportPadding, Math.min(window.innerHeight - estimatedHeight - viewportPadding, state.anchorBottom + gap))
-    : Math.max(estimatedHeight + viewportPadding, state.anchorTop - gap)
   return (
     <div
-      className={`fixed z-[120] w-max max-w-[calc(100vw-24px)] -translate-x-1/2 rounded-xl border border-line bg-surface-raised p-1.5 shadow-dialog ${placeBelow ? '' : '-translate-y-full'}`}
-      style={{ left, top }}
+      ref={anchored.ref}
+      role="toolbar"
+      aria-label={t('reader.selectionToolbar')}
+      className="fixed z-80 w-max max-w-[calc(100vw-24px)] -translate-x-1/2 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none"
+      style={anchored.style}
       onPointerDown={event => event.preventDefault()}
     >
       <div className="flex items-center gap-1">
         <button
           type="button"
-          className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+          className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-contrast transition-colors duration-150 ease-out hover:bg-accent-hover active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer"
           title={t('reader.highlight')}
           aria-label={t('reader.highlight')}
           onClick={onHighlight}
         >
-          <Highlighter className="h-[18px] w-[18px] text-accent-text" />
+          <Highlighter className="h-4 w-4" />
         </button>
-        <span className="mx-0.5 h-5 w-px bg-line" />
+        <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
         <button
-          className="grid h-9 w-9 place-items-center rounded-lg text-ink transition hover:bg-control"
+          className={iconButtonClass}
           type="button"
           title={t('reader.addNote')}
           aria-label={t('reader.addNote')}
           onClick={() => onChange({ ...state, noteOpen: true })}
         >
-          <MessageSquarePlus className="h-[18px] w-[18px]" />
+          <MessageSquarePlus className="h-4 w-4" />
         </button>
-        <button className="ml-0.5 grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-control hover:text-ink" type="button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}>
-          <X className="h-4 w-4" />
-        </button>
+        {onExplain ? (
+          <button
+            className={iconButtonClass}
+            type="button"
+            title={t('reader.explainSelection')}
+            aria-label={t('reader.explainSelection')}
+            disabled={explainDisabled}
+            onClick={onExplain}
+          >
+            <MessageCircleQuestion className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
+      <PopoverCaret placement={anchored.placement} arrowLeft={anchored.arrowLeft} />
+    </div>
+  )
+}
+
+function NoteComposer({
+  state,
+  onChange,
+  onClose,
+  onSave,
+  onDelete,
+}: AnnotationPopoverProps) {
+  const { t } = useI18n()
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  useEffect(() => {
+    if (!confirmingDelete) return
+    const timer = window.setTimeout(() => setConfirmingDelete(false), 3000)
+    return () => window.clearTimeout(timer)
+  }, [confirmingDelete])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
+
+  return (
+    <div
+      role="dialog"
+      aria-label={state.mode === 'edit' ? t('reader.editAnnotation') : t('reader.addNote')}
+      className="fixed inset-x-3 bottom-3 z-80 mx-auto w-[min(760px,calc(100vw-24px))] rounded-2xl border border-line bg-surface-raised shadow-dialog animate-pop motion-reduce:animate-none sm:bottom-5"
+      onPointerDown={event => event.preventDefault()}
+      onKeyDown={event => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault()
+          onSave()
+        }
+      }}
+    >
+      <button
+        className={`absolute right-3 top-3 ${iconButtonClass}`}
+        type="button"
+        title={t('common.close')}
+        aria-label={t('common.close')}
+        onClick={onClose}
+      >
+        <X className="h-4 w-4" />
+      </button>
+      <div className="px-5 pb-3 pt-4 pr-14">
+        <textarea
+          className="max-h-[min(40dvh,300px)] min-h-28 w-full resize-none bg-transparent py-1 text-ui-md leading-relaxed text-ink outline-none placeholder:text-muted"
+          value={state.note}
+          autoFocus
+          placeholder={t('reader.notePlaceholder')}
+          onPointerDown={event => event.stopPropagation()}
+          onChange={event => onChange({ ...state, note: event.target.value })}
+        />
+      </div>
+      <footer className="flex items-center gap-2 border-t border-line px-4 py-3">
+        {onDelete ? (
+          <button
+            className={confirmingDelete
+              ? 'inline-flex h-8 items-center gap-1.5 rounded-lg bg-danger-soft px-3 text-ui-md font-medium text-danger transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
+              : 'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-ui-md text-danger transition-colors duration-150 ease-out hover:bg-danger-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'}
+            type="button"
+            onClick={() => (confirmingDelete ? onDelete() : setConfirmingDelete(true))}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {confirmingDelete ? t('reader.confirmDeleteAnnotation') : t('reader.deleteAnnotation')}
+          </button>
+        ) : null}
+        <div className="flex-1" />
+        <button className={primaryButtonClass} type="button" onClick={onSave}>{t('reader.saveAnnotation')}</button>
+      </footer>
     </div>
   )
 }
@@ -2852,19 +3065,38 @@ function AnnotationConfirmation({
   onResolve(approved: boolean): void
 }) {
   const { t } = useI18n()
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onResolve(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [onResolve])
+
   return (
-    <div className="fixed inset-x-0 bottom-6 z-[130] flex justify-center px-4">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface-raised p-4 shadow-dialog">
+    <div
+      className="fixed inset-0 z-90 grid place-items-center bg-overlay p-4"
+      onPointerDown={event => {
+        if (event.target === event.currentTarget) onResolve(false)
+      }}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={request.title}
+        className="w-full max-w-sm rounded-2xl border border-line bg-surface p-4 shadow-dialog animate-pop motion-reduce:animate-none"
+      >
         <div className="flex gap-3">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-soft text-accent-text"><StickyNote className="h-4 w-4" /></div>
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent-text"><StickyNote className="h-4 w-4" /></div>
           <div className="min-w-0 flex-1">
             <h3 className="text-ui-md font-semibold text-ink">{request.title}</h3>
-            <p className="mt-1 text-ui-sm leading-relaxed text-muted">{request.description}</p>
+            <p className="mt-1 max-h-32 overflow-auto break-words text-ui-sm leading-relaxed text-muted">{request.description}</p>
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <button className="h-9 rounded-lg px-3 text-ui-sm text-muted hover:bg-control" type="button" onClick={() => onResolve(false)}>{t('common.cancel')}</button>
-          <button className={primaryButtonClass} type="button" onClick={() => onResolve(true)}>{t('reader.confirmAnnotationAction')}</button>
+          <button className={toolbarButtonClass} type="button" onClick={() => onResolve(false)}>{t('common.cancel')}</button>
+          <button className={primaryButtonClass} type="button" autoFocus onClick={() => onResolve(true)}>{t('reader.confirmAnnotationAction')}</button>
         </div>
       </div>
     </div>
@@ -3354,7 +3586,7 @@ function AnnotationsPanel({
             </button>
             <button
               type="button"
-              className="mx-2 mb-2 rounded-lg px-2 py-1 text-ui-xs text-muted opacity-70 hover:bg-control hover:text-ink group-hover:opacity-100"
+              className="mx-2 mb-2 rounded-lg px-2 py-1 text-ui-xs text-muted opacity-70 transition-colors duration-150 ease-out hover:bg-surface-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer group-hover:opacity-100"
               onClick={() => onEdit(annotation)}
             >
               {t('reader.editAnnotation')}
@@ -6030,6 +6262,174 @@ async function buildCurrentPageReferenceOptions(reader: any, book: any, t: Trans
       }
     })
     .filter((reference): reference is ChatReference => reference !== null)
+}
+
+async function buildSelectionExplainRequest({
+  selection,
+  reader,
+  book,
+  t,
+  language,
+}: {
+  selection: BookSelection
+  reader: any
+  book: any
+  t: Translate
+  language: AppLanguage
+}): Promise<ChatSubmission> {
+  const baseCurrent = getCurrentChatContext(reader, book)
+  const selectionUnitIndex = getSelectionUnitIndex(selection)
+  const unitIndex = typeof selectionUnitIndex === 'number' ? selectionUnitIndex : baseCurrent.unitIndex
+  const unit = book ? getReadableContentUnit(book, unitIndex) : undefined
+  const chapterTitle = unit?.title ?? baseCurrent.sectionTitle ?? baseCurrent.tocLabel ?? ''
+  const current = {
+    ...baseCurrent,
+    unitIndex,
+    unitId: unit?.id ?? baseCurrent.unitId,
+    unitKind: unit?.kind ?? baseCurrent.unitKind,
+    unitTitle: chapterTitle || baseCurrent.unitTitle,
+    sectionIndex: unit?.sectionIndex ?? baseCurrent.sectionIndex,
+    sectionId: unit?.kind === 'section' ? unit.id : baseCurrent.sectionId,
+    sectionTitle: unit?.kind === 'section' ? chapterTitle || undefined : baseCurrent.sectionTitle,
+    pageIndex: unit?.pageIndex ?? baseCurrent.pageIndex,
+  }
+  const selectedText = clipExplainText(normalizeReferenceText(selection.text ?? ''), MAX_EXPLAIN_SELECTION_CHARS)
+
+  let content: any = null
+  try {
+    if (typeof book?.aiChat?.getContent === 'function') {
+      content = await book.aiChat.getContent(unitIndex, {
+        includeBlocks: true,
+        maxChars: MAX_EXPLAIN_PARAGRAPH_CHARS * 2,
+      })
+    }
+  } catch {
+    // The selected text and reading location still provide a useful fallback.
+  }
+
+  const selectedBlockIds = getSelectionBlockIds(selection)
+  const blocks = Array.isArray(content?.blocks) ? content.blocks : []
+  let selectedBlocks = selectedBlockIds.size
+    ? blocks.filter((block: any) => typeof block?.blockId === 'string' && selectedBlockIds.has(block.blockId))
+    : []
+  if (!selectedBlocks.length && selectedText) {
+    const normalizedSelection = normalizeReferenceSearchText(selectedText)
+    const matchedBlock = blocks.find((block: any) => (
+      normalizeReferenceSearchText(String(block?.text ?? '')).includes(normalizedSelection)
+    ))
+    if (matchedBlock) selectedBlocks = [matchedBlock]
+  }
+
+  const paragraphText = clipExplainText(
+    normalizeReferenceText(
+      selectedBlocks.length
+        ? selectedBlocks.map((block: any) => String(block.text ?? '')).filter(Boolean).join('\n\n')
+        : String(content?.text ?? selectedText),
+    ),
+    MAX_EXPLAIN_PARAGRAPH_CHARS,
+  )
+  const locationLabel = unit?.kind === 'page'
+    ? `${t('reader.page')} ${unitIndex + 1}`
+    : `${t('reader.chapter')} ${unitIndex + 1}`
+  const chapterDescription = chapterTitle ? `${locationLabel} · ${chapterTitle}` : locationLabel
+  const references = buildSelectionExplainReferences({
+    selectedBlocks,
+    selectedBlockIds,
+    selectedText,
+    paragraphText,
+    unitIndex,
+    chapterDescription,
+  })
+  const prompt = language === 'en'
+    ? [
+        'Explain the selected passage using its paragraph and chapter context. Clarify its direct meaning, its role in the paragraph, and any background needed to understand it. Do not speculate beyond the text.',
+        `Selected passage:\n${selectedText}`,
+        `Current paragraph:\n${paragraphText || selectedText}`,
+        `Chapter context:\n${chapterDescription}`,
+      ].join('\n\n')
+    : [
+        '请结合当前段落和章节语境解释选中的内容。说明它的直接含义、在本段中的作用，以及理解它所需的背景；不要脱离原文进行无依据推测。',
+        `选中文字：\n${selectedText}`,
+        `当前段落：\n${paragraphText || selectedText}`,
+        `章节信息：\n${chapterDescription}`,
+      ].join('\n\n')
+
+  return {
+    content: buildChatMessageContentWithReferences(prompt, references, t, language),
+    displayContent: t('reader.explainSelectionDisplay', {
+      text: clipExplainText(selectedText, 80),
+    }),
+    references,
+    current,
+  }
+}
+
+function getSelectionUnitIndex(selection: BookSelection): number | undefined {
+  const start = selection.range.start
+  if (start.type === 'reflowable' || start.type === 'text') return start.sectionIndex
+  if (start.type === 'fixed' || start.type === 'image') return start.pageIndex
+  return undefined
+}
+
+function getSelectionBlockIds(selection: BookSelection): Set<string> {
+  const ids = new Set(selection.blockIds ?? [])
+  const start = selection.range.start
+  const end = selection.range.end
+  if (start.type === 'reflowable' && start.blockId) ids.add(start.blockId)
+  if (end?.type === 'reflowable' && end.blockId) ids.add(end.blockId)
+  return ids
+}
+
+function buildSelectionExplainReferences({
+  selectedBlocks,
+  selectedBlockIds,
+  selectedText,
+  paragraphText,
+  unitIndex,
+  chapterDescription,
+}: {
+  selectedBlocks: any[]
+  selectedBlockIds: Set<string>
+  selectedText: string
+  paragraphText: string
+  unitIndex: number
+  chapterDescription: string
+}): ChatReference[] {
+  const references = selectedBlocks.slice(0, 4).map((block, index): ChatReference => {
+    const blockId = typeof block?.blockId === 'string' ? block.blockId : undefined
+    const excerpt = clipChatReferenceExcerpt(normalizeReferenceText(String(block?.text ?? '')))
+    return {
+      id: `paragraph:${unitIndex}:${blockId ?? index}:selection`,
+      kind: 'paragraph',
+      label: excerpt.length > 32 ? `${excerpt.slice(0, 32)}...` : excerpt,
+      description: chapterDescription,
+      href: typeof block?.citation?.href === 'string'
+        ? block.citation.href
+        : createChatReferenceHref(unitIndex, blockId),
+      unitIndex,
+      blockId,
+      excerpt,
+    }
+  })
+  if (references.length) return dedupeChatReferences(references)
+
+  const blockId = selectedBlockIds.values().next().value as string | undefined
+  const excerpt = clipChatReferenceExcerpt(paragraphText || selectedText)
+  return [{
+    id: `paragraph:${unitIndex}:${blockId ?? 'selection'}:selection`,
+    kind: 'paragraph',
+    label: selectedText.length > 32 ? `${selectedText.slice(0, 32)}...` : selectedText,
+    description: chapterDescription,
+    href: createChatReferenceHref(unitIndex, blockId),
+    unitIndex,
+    blockId,
+    excerpt,
+  }]
+}
+
+function clipExplainText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value
+  return `${value.slice(0, maxChars).trimEnd()}...`
 }
 
 function buildChatMessageContentWithReferences(content: string, references: readonly ChatReference[], t: Translate, language: AppLanguage): string {

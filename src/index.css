@@ -294,6 +294,7 @@ html[data-app-theme='dark'] {
                 --ui-warning-bg/--ui-warning-border/--ui-warning-text
                 --ui-danger-bg/--ui-danger-border/--ui-danger-text
      marks    : --ui-mark-search --ui-mark-tts --ui-mark-citation --ui-mark-annotation
+                --ui-mark-selection
                 --ui-mark-citation-border --ui-mark-citation-ring
    Reader colors are selected directly from the app-level light/dark theme.
 --------------------------------------------------------------------------- */
@@ -337,6 +338,7 @@ html[data-app-theme='dark'] {
   --ui-mark-tts: rgba(45, 212, 191, 0.22);
   --ui-mark-citation: rgba(245, 158, 11, 0.22);
   --ui-mark-annotation: rgba(96, 165, 250, 0.28);
+  --ui-mark-selection: rgba(96, 165, 250, 0.35);
   --ui-mark-citation-border: rgba(245, 158, 11, 0.75);
   --ui-mark-citation-ring: rgba(245, 158, 11, 0.08);
   color: var(--ui-text);
@@ -381,6 +383,7 @@ html[data-app-theme='dark'] {
   --ui-mark-tts: rgba(45, 212, 191, 0.26);
   --ui-mark-citation: rgba(245, 158, 11, 0.3);
   --ui-mark-annotation: rgba(96, 165, 250, 0.32);
+  --ui-mark-selection: rgba(96, 165, 250, 0.4);
   --ui-mark-citation-border: rgba(245, 158, 11, 0.85);
   --ui-mark-citation-ring: rgba(245, 158, 11, 0.12);
   color: var(--ui-text);
@@ -400,6 +403,15 @@ html[data-app-theme='dark'] {
 .rebook-mark-annotation {
   border-radius: 4px;
   background: var(--ui-mark-annotation) !important;
+}
+
+/* Unify the native text selection with the reader palette instead of the
+   browser default blue. ::selection supports only color/background (no
+   border-radius), so the selection shares hue/alpha with painted marks but
+   not their corner rounding. */
+#viewer ::selection {
+  background: var(--ui-mark-selection);
+  color: inherit;
 }
 
 .rebook-tts-current {
