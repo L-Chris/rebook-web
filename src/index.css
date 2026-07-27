@@ -531,6 +531,17 @@ html[data-app-theme='dark'] {
   border-collapse: collapse;
 }
 
+.chat-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.2rem;
+}
+
+.chat-markdown .katex-display > .katex {
+  white-space: nowrap;
+}
+
 .chat-markdown th,
 .chat-markdown td {
   border: 1px solid var(--ui-border);

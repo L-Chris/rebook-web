@@ -2,7 +2,10 @@ import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useM
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import 'katex/dist/katex.min.css'
 import {
   ArrowLeft,
   ArrowUp,
@@ -4379,7 +4382,8 @@ function ChatMarkdownContent({
           <Fragment key={part.key}>
             {markdown ? (
               <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkLooseStrong]}
+                remarkPlugins={[remarkGfm, remarkMath, remarkLooseStrong]}
+                rehypePlugins={[rehypeKatex]}
                 urlTransform={transformChatMarkdownUrl}
                 components={{
                   a: ({ node: _node, href, children, ...linkProps }) => (
