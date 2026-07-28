@@ -1041,6 +1041,7 @@ function ReaderWorkspace({
   const bookCoverUrlRef = useRef<string | null>(null)
   const progressSaveTimerRef = useRef<number | null>(null)
   const readerResetIdRef = useRef(0)
+  const bookOpenIdRef = useRef(0)
   const pendingProgressRef = useRef<{
     progress: number
     locator: ReturnType<typeof createShelfLocator>
@@ -1472,7 +1473,7 @@ function ReaderWorkspace({
     const entries = getEnabledDemoMarketplaceExtensionItems(config)
     let cancelled = false
     if (marketplaceCatalogStatus !== 'ready') {
-      setMarketplaceRuntimeExtensions([])
+      setMarketplaceRuntimeExtensions(current => current.length ? [] : current)
       setExtensionRuntimeStatus(Object.fromEntries(entries.map(entry => [entry.manifest.id, {
         state: marketplaceCatalogStatus === 'failed' ? 'error' : 'loading',
         message: marketplaceCatalogStatus === 'failed'
@@ -1482,8 +1483,8 @@ function ReaderWorkspace({
       return
     }
     if (!entries.length) {
-      setMarketplaceRuntimeExtensions([])
-      setExtensionRuntimeStatus({})
+      setMarketplaceRuntimeExtensions(current => current.length ? [] : current)
+      setExtensionRuntimeStatus(current => Object.keys(current).length ? {} : current)
       return
     }
 
@@ -1535,7 +1536,7 @@ function ReaderWorkspace({
         }
       }
       if (!cancelled) {
-        setMarketplaceRuntimeExtensions(loaded)
+        setMarketplaceRuntimeExtensions(current => sameExtensionRuntimeList(current, loaded) ? current : loaded)
         setExtensionRuntimeStatus(nextStatus)
       }
     })
@@ -1853,7 +1854,8 @@ function ReaderWorkspace({
   }, [buildPlugins, appTheme])
 
   const wireReaderEvents = useCallback((reader: any) => {
-    reader.on('load', () => renderAnnotationMarks(reader, annotationsRef.current))
+    // Reader marks persist across page renders. Reapplying them from `load`
+    // would recurse because clearMarks/setMark trigger another render and load.
     reader.on('relocate', (event: any) => {
       setLocation(event)
       refreshTOC(reader, event)
@@ -1922,8 +1924,8 @@ function ReaderWorkspace({
     wireReaderEvents(nextReader)
 
     if (reopen) {
-      await openFileWithReader(reopen, nextReader, { preserveFile: true })
-      if (resetId !== readerResetIdRef.current) return
+      const reopened = await openFileWithReader(reopen, nextReader, { preserveFile: true })
+      if (!reopened || resetId !== readerResetIdRef.current) return
       const totalFraction = Number(previousLocation?.totalFraction)
       if (Number.isFinite(totalFraction)) {
         await nextReader.goToFraction(Math.max(0, Math.min(1, totalFraction)))
@@ -1987,6 +1989,8 @@ function ReaderWorkspace({
   useEffect(() => {
     void resetReader(config, null)
     return () => {
+      readerResetIdRef.current += 1
+      bookOpenIdRef.current += 1
       translationRuntimeUnsubscribeRef.current?.()
       translationRuntimeUnsubscribeRef.current = null
       readerRef.current?.destroy?.()
@@ -2026,20 +2030,28 @@ function ReaderWorkspace({
     }
   }, [appendDebug, book, location, t])
 
-  const openFileWithReader = async (file: File, targetReader = readerRef.current, options: { preserveFile?: boolean } = {}) => {
-    if (!targetReader) return
+  const openFileWithReader = async (file: File, targetReader = readerRef.current, options: { preserveFile?: boolean } = {}): Promise<boolean> => {
+    if (!targetReader) return false
+    const openId = ++bookOpenIdRef.current
     const previousFile = currentFileRef.current
     const previousTranslatedTOC = translatedTOCRef.current
-    translatedTOCRef.current = null
     setBusy(true)
     setStatus(t('reader.openingFile', { name: file.name }))
     try {
       const started = performance.now()
       const openedBook = await targetReader.open(file)
+      if (openId !== bookOpenIdRef.current) {
+        if (targetReader !== readerRef.current) targetReader.destroy?.()
+        return false
+      }
+      if (targetReader !== readerRef.current) {
+        targetReader.destroy?.()
+        return readerRef.current
+          ? await openFileWithReader(file, readerRef.current, options)
+          : false
+      }
+      translatedTOCRef.current = null
       if (!options.preserveFile) currentFileRef.current = file
-      bookRef.current = openedBook
-      setBook(openedBook)
-      bindTranslationRuntime(targetReader)
       const parsedTitle = formatLanguageMap(openedBook.metadata?.title).trim()
       const title = parsedTitle && parsedTitle !== file.name ? parsedTitle : titleFromBookFileName(file.name, t('reader.untitledBook'))
       const author = formatBookContributors(openedBook.metadata?.author)
@@ -2049,10 +2061,13 @@ function ReaderWorkspace({
       } catch (error) {
         appendDebug('cover extraction failed', formatError(error))
       }
-      setBookTitle(title)
-      setBookAuthor(author)
-      replaceBookCover(cover)
-      setLibraryItem(current => current ? { ...current, title, author: author || null } : current)
+      if (openId !== bookOpenIdRef.current) return false
+      if (targetReader !== readerRef.current) {
+        targetReader.destroy?.()
+        return readerRef.current
+          ? await openFileWithReader(file, readerRef.current, options)
+          : false
+      }
       if (!options.preserveFile && libraryBookId && isLocalBookId(libraryBookId)) {
         await updateLocalBookMetadata(libraryBookId, {
           title,
@@ -2060,11 +2075,24 @@ function ReaderWorkspace({
           ...(cover ? { cover } : {}),
         })
       }
+      if (openId !== bookOpenIdRef.current || targetReader !== readerRef.current) return false
+      bookRef.current = openedBook
+      bindTranslationRuntime(targetReader)
+      setBookTitle(title)
+      setBookAuthor(author)
+      replaceBookCover(cover)
+      setLibraryItem(current => current ? { ...current, title, author: author || null } : current)
+      if (openId !== bookOpenIdRef.current || targetReader !== readerRef.current) return false
+      setBook(openedBook)
       setChatMessages([])
       setSearchResults([])
       setSearchStatus(t('reader.searchRequired'))
       refreshTOC(targetReader)
       await targetReader.goTo(0)
+      if (openId !== bookOpenIdRef.current || targetReader !== readerRef.current) return false
+      if (annotationsRef.current.some(annotation => !annotation.deletedAt)) {
+        renderAnnotationMarks(targetReader, annotationsRef.current)
+      }
       setStatus(t('reader.openedFile', { name: file.name, duration: formatMs(performance.now() - started) }))
       setTTSStatus(openedBook.tts ? t('reader.ttsReady') : t('reader.ttsDisabled'))
       appendDebug('book opened', {
@@ -2075,7 +2103,13 @@ function ReaderWorkspace({
         cover: Boolean(cover),
         toc: flattenTOCItems(openedBook.toc ?? []).length,
       })
+      return true
     } catch (error) {
+      if (openId !== bookOpenIdRef.current) return false
+      if (targetReader !== readerRef.current && readerRef.current) {
+        targetReader.destroy?.()
+        return openFileWithReader(file, readerRef.current, options)
+      }
       const detail = error instanceof UnsupportedFormatError
         ? t('reader.unsupportedFormat')
         : error instanceof EBookError
@@ -2086,8 +2120,9 @@ function ReaderWorkspace({
       if (bookRef.current) translatedTOCRef.current = previousTranslatedTOC
       if (!bookRef.current) setBook(null)
       appendDebug('open failed', detail)
+      return false
     } finally {
-      setBusy(false)
+      if (openId === bookOpenIdRef.current) setBusy(false)
     }
   }
 
@@ -2131,7 +2166,8 @@ function ReaderWorkspace({
         setConfig(nextConfig)
         setDraftConfig(nextConfig)
         await resetReader(nextConfig, null)
-        await openFileWithReader(file, readerRef.current)
+        const opened = await openFileWithReader(file, readerRef.current)
+        if (!opened || cancelled) return
         const unitIndex = item.locator?.unitIndex
         if (typeof unitIndex === 'number') {
           await readerRef.current?.goTo?.(unitIndex)
@@ -2146,6 +2182,7 @@ function ReaderWorkspace({
 
     return () => {
       cancelled = true
+      bookOpenIdRef.current += 1
       controller.abort()
     }
   }, [libraryBookId])
@@ -6063,6 +6100,13 @@ function getEnabledDemoMarketplaceExtensionItems(config: DemoConfig): readonly R
     .filter(item => item.enabled
       && item.installation?.version === item.manifest.version
       && !isDemoExtensionFeatureControlled(item.manifest))
+}
+
+function sameExtensionRuntimeList(
+  current: readonly RebookExtension[],
+  next: readonly RebookExtension[],
+): boolean {
+  return current.length === next.length && current.every((extension, index) => extension === next[index])
 }
 
 function createDemoConfigWithExtensionManager(config: DemoConfig, manager: ReturnType<typeof createDemoExtensionManager>): DemoConfig {
