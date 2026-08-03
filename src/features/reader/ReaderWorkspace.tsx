@@ -7,7 +7,6 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import 'katex/dist/katex.min.css'
 import {
-  ArrowLeft,
   ArrowUp,
   BookOpen,
   Check,
@@ -17,6 +16,7 @@ import {
   Highlighter,
   Info,
   Languages,
+  Library,
   ListTree,
   Loader2,
   LogIn,
@@ -3356,6 +3356,16 @@ function Header(props: {
             <PanelLeft size={17} />
           </button>
         ) : null}
+        {props.onExit ? (
+          <button
+            className={iconButtonClass}
+            type="button"
+            onClick={props.onExit}
+            title={t('common.backToShelf')}
+          >
+            <Library size={17} />
+          </button>
+        ) : null}
         {props.translationAvailable ? (
           <button
             className={selectableIconButtonClass(props.translationActive)}
@@ -3405,16 +3415,6 @@ function Header(props: {
                   <UserRound size={17} className="shrink-0 text-muted" />
                   <span className="truncate text-ui-sm text-muted-strong">{props.accountLabel}</span>
                 </div>
-              ) : null}
-              {props.onExit ? (
-                <ReaderMenuAction
-                  icon={<ArrowLeft size={17} />}
-                  label={t('common.backToShelf')}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    props.onExit?.()
-                  }}
-                />
               ) : null}
               <ReaderMenuAction
                 icon={<Settings size={17} />}
@@ -3475,11 +3475,6 @@ function Header(props: {
             </div>
           ) : null}
         </div>
-        {props.onExit ? (
-          <button className={iconButtonClass} type="button" onClick={props.onExit} title={t('common.backToShelf')}>
-            <X size={17} />
-          </button>
-        ) : null}
       </div>
       </header>
     </div>
