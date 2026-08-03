@@ -27,6 +27,7 @@ import {
   MessageSquarePlus,
   MessageSquareText,
   Minimize2,
+  Moon,
   PanelLeft,
   Pin,
   PinOff,
@@ -34,6 +35,7 @@ import {
   Search,
   StickyNote,
   Settings,
+  Sun,
   Trash2,
   UserRound,
   Volume2,
@@ -74,6 +76,7 @@ import {
   type RebookExtensionManifest,
   type RebookExtensionSettingInspection,
   type RendererStyles,
+  type SelectionGranularity,
   type BookPosition,
   type BookSelection,
   type ReaderSelectionEvent,
@@ -128,7 +131,7 @@ import {
   isOfficialExtensionCatalogURL,
 } from '../../lib/extension-marketplace'
 import { notifyReaderConfigChanged, READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
-import { useAppTheme } from '../theme/ThemeContext'
+import { useAppTheme, type AppTheme } from '../theme/ThemeContext'
 import { useAuth } from '../auth/AuthContext'
 import { CloudDriveSettings } from '../cloud-drive/CloudDrivePage'
 import {
@@ -137,6 +140,7 @@ import {
   menuRowClass,
   primaryButtonClass,
   roundIconButtonClass,
+  selectableIconButtonClass,
   toolbarButtonClass,
 } from '../../lib/ui-classes'
 import {
@@ -158,7 +162,18 @@ import {
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
 type SidebarView = 'toc' | 'search' | 'annotations'
-export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'chat' | 'extensions' | 'debug'
+export type SettingsSection = 'general' | 'font' | 'reading' | 'cloud' | 'translation' | 'tts' | 'ai-providers' | 'chat' | 'extensions' | 'debug'
+
+export type AIProviderKind = 'custom' | 'openai' | 'deepseek' | 'openrouter' | 'siliconflow'
+
+export interface AIProviderConfig {
+  id: string
+  kind: AIProviderKind
+  name: string
+  baseURL: string
+  apiKey: string
+  models: string[]
+}
 type DemoExtensionInstallations = Record<string, RebookExtensionInstallation>
 type DemoExtensionSettings = Record<string, Record<string, unknown>>
 type DemoExtensionCommand = { id: string; title: string; extensionId: string; extensionName: string; available: boolean }
@@ -177,6 +192,7 @@ export interface DemoConfig {
   monospaceFont: string
   overrideBookFonts: boolean
   hyphenate: boolean
+  selectionGranularity: SelectionGranularity
   debug: boolean
   translate: boolean
   translationRuntimeEnabled: boolean
@@ -185,9 +201,8 @@ export interface DemoConfig {
   professionalTranslation: boolean
   professionalServiceBaseUrl: string
   professionalBookId: string
-  baseURL: string
-  apiKey: string
-  model: string
+  translationAIProvider: string
+  translationAIModel: string
   translationTargetLanguage: AppLanguage | 'interface'
   translateMode: 'bilingual' | 'replace'
   prefetchPages: string
@@ -207,8 +222,8 @@ export interface DemoConfig {
   ttsFemaleVoices: string
   ttsOtherVoice: string
   chat: boolean
-  chatBaseURL: string
-  chatAPIKey: string
+  aiProviders: AIProviderConfig[]
+  chatProvider: string
   chatModel: string
   chatMaxContentChars: string
   chatPanelWidth: string
@@ -593,6 +608,35 @@ function writeSidebarPinnedPreference(pinned: boolean): void {
   }
 }
 
+const AI_PROVIDER_KIND_LABELS: Record<Exclude<AIProviderKind, 'custom'>, string> = {
+  openai: 'OpenAI',
+  deepseek: 'DeepSeek',
+  openrouter: 'OpenRouter',
+  siliconflow: 'SiliconFlow',
+}
+
+const AI_PROVIDER_PRESET_BASE_URLS: Record<Exclude<AIProviderKind, 'custom'>, string> = {
+  openai: 'https://api.openai.com/v1',
+  deepseek: 'https://api.deepseek.com',
+  openrouter: 'https://openrouter.ai/api/v1',
+  siliconflow: 'https://api.siliconflow.cn/v1',
+}
+
+function isAIProviderKind(value: unknown): value is AIProviderKind {
+  return value === 'custom' || value === 'openai' || value === 'deepseek' || value === 'openrouter' || value === 'siliconflow'
+}
+
+function createEmptyAIProvider(id: string): AIProviderConfig {
+  return { id, kind: 'custom', name: '', baseURL: '', apiKey: '', models: [] }
+}
+
+function nextAIProviderId(providers: readonly AIProviderConfig[]): string {
+  const ids = new Set(providers.map(provider => provider.id))
+  let index = providers.length + 1
+  while (ids.has(`provider-${index}`)) index += 1
+  return `provider-${index}`
+}
+
 const defaultConfig: DemoConfig = {
   layout: 'paginated',
   spread: '2',
@@ -601,6 +645,7 @@ const defaultConfig: DemoConfig = {
   ...READER_FONT_DEFAULTS,
   overrideBookFonts: false,
   hyphenate: true,
+  selectionGranularity: 'free',
   debug: false,
   translate: true,
   translationRuntimeEnabled: false,
@@ -609,9 +654,8 @@ const defaultConfig: DemoConfig = {
   professionalTranslation: false,
   professionalServiceBaseUrl: defaultRebookServiceUrl,
   professionalBookId: '',
-  baseURL: '',
-  apiKey: '',
-  model: '',
+  translationAIProvider: 'provider-1',
+  translationAIModel: '',
   translationTargetLanguage: 'interface',
   translateMode: 'bilingual',
   prefetchPages: '2',
@@ -631,8 +675,8 @@ const defaultConfig: DemoConfig = {
   ttsFemaleVoices: 'zh-CN-XiaoyiNeural, zh-CN-XiaoxiaoNeural',
   ttsOtherVoice: 'zh-CN-XiaoxiaoNeural',
   chat: true,
-  chatBaseURL: '',
-  chatAPIKey: '',
+  aiProviders: [createEmptyAIProvider('provider-1')],
+  chatProvider: 'provider-1',
   chatModel: '',
   chatMaxContentChars: '6000',
   chatPanelWidth: '420',
@@ -1053,7 +1097,7 @@ function ReaderWorkspace({
 
   const [config, setConfig] = useState<DemoConfig>(() => loadReaderConfig())
   const configRef = useRef(config)
-  const { theme: appTheme } = useAppTheme()
+  const { theme: appTheme, toggleTheme } = useAppTheme()
   const [draftConfig, setDraftConfig] = useState<DemoConfig>(config)
   const [marketplaceRuntimeExtensions, setMarketplaceRuntimeExtensions] = useState<RebookExtension[]>([])
   const [marketplaceCatalogStatus, setMarketplaceCatalogStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
@@ -1721,6 +1765,13 @@ function ReaderWorkspace({
     return createOpenAI(openaiOptions).chat(model.trim() || 'gpt-4o-mini')
   }, [])
 
+  const createConfiguredModel = useCallback((cfg: DemoConfig, providerId: string, modelName: string) => {
+    const provider = cfg.aiProviders.find(item => item.id === providerId)
+    const name = modelName.trim()
+    if (!provider || !name) return null
+    return createModel(provider.apiKey, provider.baseURL, name)
+  }, [createModel])
+
   const buildPlugins = useCallback((cfg: DemoConfig) => {
     const plugins: any[] = []
 
@@ -1769,8 +1820,8 @@ function ReaderWorkspace({
               onDownloadProgress: progress => appendDebug('browser translation download', { progress }),
             }),
           }))
-        } else if (cfg.apiKey.trim()) {
-          const model = createModel(cfg.apiKey, cfg.baseURL, cfg.model)
+        } else {
+          const model = createConfiguredModel(cfg, cfg.translationAIProvider, cfg.translationAIModel)
           if (model) plugins.push(createTranslationExtension({ ...commonOptions, model }))
         }
       }
@@ -1801,7 +1852,7 @@ function ReaderWorkspace({
     }
 
     if (cfg.chat) {
-      const model = createModel(cfg.chatAPIKey, cfg.chatBaseURL, cfg.chatModel)
+      const model = createConfiguredModel(cfg, cfg.chatProvider, cfg.chatModel)
       if (model) {
         plugins.push(createAIChatExtension({
           model,
@@ -1836,7 +1887,7 @@ function ReaderWorkspace({
 
     plugins.push(...marketplaceRuntimeExtensions)
     return plugins
-  }, [appendDebug, createModel, language, marketplaceRuntimeExtensions, ttsPlayer])
+  }, [appendDebug, createConfiguredModel, createModel, language, marketplaceRuntimeExtensions, ttsPlayer])
 
   const createDemoReader = useCallback((cfg: DemoConfig) => {
     if (!viewerRef.current) return null
@@ -1844,6 +1895,7 @@ function ReaderWorkspace({
       container: viewerRef.current,
       layout: cfg.layout,
       maxColumnCount: Number(cfg.spread),
+      selectionGranularity: cfg.selectionGranularity,
       parserOptions,
       plugins: buildPlugins(cfg),
       fixedPainter: 'canvas',
@@ -2252,11 +2304,14 @@ function ReaderWorkspace({
     }
 
     const canRefreshInPlace = changedKeys.every(key => (
-      key === 'translateMode' || key === 'chatPanelWidth'
+      key === 'translateMode' || key === 'chatPanelWidth' || key === 'selectionGranularity'
     ))
     if (canRefreshInPlace && readerRef.current) {
       const reader = readerRef.current
       reader.setStyles?.(getReaderStyles(next, appTheme))
+      if (changedKeys.includes('selectionGranularity')) {
+        reader.setSelectionGranularity?.(next.selectionGranularity)
+      }
       if (changedKeys.includes('translateMode')) {
         bookRef.current?.refreshTranslatedTOC?.()
         await reader.refresh?.()
@@ -2274,6 +2329,34 @@ function ReaderWorkspace({
     void ensureReaderFontsLoaded(config).then(() => {
       readerRef.current?.setStyles?.(getReaderStyles(config, appTheme))
     })
+  }
+
+  // Direct config writes from the header menu, mirroring applyConfig: update
+  // state + storage first so the READER_CONFIG_CHANGED_EVENT listener sees no diff.
+  const applyMenuConfig = (patch: Partial<DemoConfig>) => {
+    const next = { ...configRef.current, ...patch }
+    configRef.current = next
+    setConfig(next)
+    setDraftConfig(next)
+    saveReaderConfig(next)
+    return next
+  }
+
+  const cyclePageMode = () => {
+    const current = configRef.current
+    const mode = current.layout === 'scrolled' ? 'scrolled' : current.spread === '1' ? 'single' : 'double'
+    const patch: Partial<DemoConfig> = mode === 'single'
+      ? { layout: 'paginated', spread: '2' }
+      : mode === 'double'
+        ? { layout: 'scrolled' }
+        : { layout: 'paginated', spread: '1' }
+    void resetReader(applyMenuConfig(patch))
+  }
+
+  const selectGranularityFromMenu = (granularity: SelectionGranularity) => {
+    if (configRef.current.selectionGranularity === granularity) return
+    const next = applyMenuConfig({ selectionGranularity: granularity })
+    readerRef.current?.setSelectionGranularity?.(next.selectionGranularity)
   }
 
   const uploadCurrentBookForStoryMemory = async (uploadConfig: DemoConfig) => {
@@ -2723,6 +2806,7 @@ function ReaderWorkspace({
           <Header
             busy={busy}
             bookTitle={bookTitle}
+            chapterTitle={typeof location?.tocItem?.label === 'string' ? location.tocItem.label : ''}
             sidebarOpen={sidebarOpen}
             activePanel={activePanel}
             translationAvailable={config.translate && !config.professionalTranslation}
@@ -2731,6 +2815,9 @@ function ReaderWorkspace({
             chatEnabled={config.chat}
             authenticated={authenticated}
             accountLabel={accountLabel}
+            pageMode={config.layout === 'scrolled' ? 'scrolled' : config.spread === '1' ? 'single' : 'double'}
+            theme={appTheme}
+            selectionGranularity={config.selectionGranularity}
             onExit={onExit}
             onLogin={onLogin}
             onLogout={onLogout}
@@ -2742,6 +2829,9 @@ function ReaderWorkspace({
               setSettingsOpen(true)
             }}
             onTogglePanel={panel => setActivePanel(activePanel === panel ? null : panel)}
+            onCyclePageMode={cyclePageMode}
+            onToggleTheme={toggleTheme}
+            onSelectGranularity={selectGranularityFromMenu}
           />
           <div className="relative min-h-0 flex-1 overflow-hidden bg-surface">
             <div ref={viewerRef} id="viewer" />
@@ -3146,6 +3236,7 @@ function AnnotationConfirmation({
 function Header(props: {
   busy: boolean
   bookTitle: string
+  chapterTitle: string
   sidebarOpen: boolean
   activePanel: Panel
   translationAvailable: boolean
@@ -3154,6 +3245,9 @@ function Header(props: {
   chatEnabled: boolean
   authenticated: boolean
   accountLabel: string
+  pageMode: 'single' | 'double' | 'scrolled'
+  theme: AppTheme
+  selectionGranularity: SelectionGranularity
   onExit?: () => void
   onLogin?: () => void
   onLogout?: () => void
@@ -3161,6 +3255,9 @@ function Header(props: {
   onToggleTranslation(): void
   onOpenSettings(): void
   onTogglePanel(panel: Panel): void
+  onCyclePageMode(): void
+  onToggleTheme(): void
+  onSelectGranularity(granularity: SelectionGranularity): void
 }) {
   const { t } = useI18n()
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -3210,6 +3307,20 @@ function Header(props: {
 
   const visible = !hoverCapable || revealed || menuOpen
 
+  const pageModeLabel = props.pageMode === 'single'
+    ? t('settings.singlePage')
+    : props.pageMode === 'double'
+      ? t('reader.doublePage')
+      : t('settings.scrolled')
+  const themeLabel = props.theme === 'dark' ? t('common.lightMode') : t('common.darkMode')
+  const granularityOptions: readonly { value: SelectionGranularity; label: string }[] = [
+    { value: 'free', label: t('reader.selectFree') },
+    { value: 'word', label: t('reader.selectWord') },
+    { value: 'sentence', label: t('reader.selectSentence') },
+    { value: 'paragraph', label: t('reader.paragraph') },
+  ]
+  const menuDivider = <div className="my-1 border-t border-line" aria-hidden="true" />
+
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-50 h-11">
       <div
@@ -3217,6 +3328,14 @@ function Header(props: {
         aria-hidden="true"
         onPointerEnter={reveal}
       />
+      {!visible && props.chapterTitle ? (
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-surface via-surface/80 to-transparent px-3 pb-5 pt-1.5"
+          aria-hidden="true"
+        >
+          <div className="truncate text-ui-sm text-muted">{props.chapterTitle}</div>
+        </div>
+      ) : null}
       <header
         className={`absolute inset-x-0 top-0 grid h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-visible bg-surface/92 px-3 backdrop-blur-xl transition duration-200 motion-reduce:transition-none ${
           visible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'
@@ -3234,32 +3353,38 @@ function Header(props: {
             onClick={props.onToggleSidebar}
             title={t('reader.openSidebar')}
           >
-            <PanelLeft className="h-4 w-4" />
+            <PanelLeft size={17} />
           </button>
         ) : null}
         {props.translationAvailable ? (
           <button
-            className={sidebarToolButtonClass(props.translationActive)}
+            className={selectableIconButtonClass(props.translationActive)}
             type="button"
             onClick={props.onToggleTranslation}
             title={props.translationError || (props.translationActive ? t('reader.pauseTranslation') : t('reader.startTranslation'))}
             aria-pressed={props.translationActive}
             disabled={props.busy}
           >
-            <Languages className="h-4 w-4" />
+            <Languages size={17} />
           </button>
         ) : null}
       </div>
       <div className="min-w-0 text-center">
         <div className="flex items-center justify-center gap-2 truncate text-ui-md font-semibold text-ink">
           {props.busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : null}
-          <span className="truncate">{props.bookTitle || (props.busy ? t('reader.loading') : t('reader.reader'))}</span>
+          <span className="truncate">{props.chapterTitle || props.bookTitle || (props.busy ? t('reader.loading') : t('reader.reader'))}</span>
         </div>
       </div>
       <div className="flex items-center justify-end gap-1">
         {props.chatEnabled ? (
-          <button className={iconButtonClass} type="button" onClick={() => props.onTogglePanel('chat')} title={t('reader.chat')}>
-            <MessageSquareText className="h-4 w-4" />
+          <button
+            className={selectableIconButtonClass(props.activePanel === 'chat')}
+            type="button"
+            onClick={() => props.onTogglePanel('chat')}
+            title={t('reader.chat')}
+            aria-pressed={props.activePanel === 'chat'}
+          >
+            <MessageSquareText size={17} />
           </button>
         ) : null}
         <div className="relative" ref={menuRef}>
@@ -3271,19 +3396,19 @@ function Header(props: {
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen(open => !open)}
           >
-            <Menu className="h-4 w-4" />
+            <Menu size={17} />
           </button>
           {menuOpen ? (
-            <div className="absolute right-0 top-11 z-80 w-60 rounded-xl border border-line bg-surface-raised p-1.5 text-left shadow-menu animate-pop motion-reduce:animate-none">
+            <div className="absolute right-0 top-11 z-80 w-60 rounded-lg border border-line bg-surface-raised p-1.5 text-left shadow-menu animate-pop motion-reduce:animate-none">
               {props.authenticated ? (
                 <div className="mb-1 flex items-center gap-2.5 border-b border-line px-3 py-2.5">
-                  <UserRound className="h-4 w-4 shrink-0 text-muted" />
+                  <UserRound size={17} className="shrink-0 text-muted" />
                   <span className="truncate text-ui-sm text-muted-strong">{props.accountLabel}</span>
                 </div>
               ) : null}
               {props.onExit ? (
                 <ReaderMenuAction
-                  icon={<ArrowLeft className="h-4 w-4" />}
+                  icon={<ArrowLeft size={17} />}
                   label={t('common.backToShelf')}
                   onClick={() => {
                     setMenuOpen(false)
@@ -3292,16 +3417,44 @@ function Header(props: {
                 />
               ) : null}
               <ReaderMenuAction
-                icon={<Settings className="h-4 w-4" />}
+                icon={<Settings size={17} />}
                 label={t('common.settings')}
                 onClick={() => {
                   setMenuOpen(false)
                   props.onOpenSettings()
                 }}
               />
+              {menuDivider}
+              <ReaderMenuAction
+                icon={<BookOpen size={17} />}
+                label={pageModeLabel}
+                onClick={() => {
+                  setMenuOpen(false)
+                  props.onCyclePageMode()
+                }}
+              />
+              <ReaderMenuAction
+                icon={props.theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+                label={themeLabel}
+                onClick={() => {
+                  setMenuOpen(false)
+                  props.onToggleTheme()
+                }}
+              />
+              {menuDivider}
+              <div className="px-3 pb-1 pt-1.5 text-ui-xs font-medium text-muted">{t('reader.textSelection')}</div>
+              {granularityOptions.map(option => (
+                <ReaderMenuAction
+                  key={option.value}
+                  label={option.label}
+                  selected={props.selectionGranularity === option.value}
+                  onClick={() => props.onSelectGranularity(option.value)}
+                />
+              ))}
+              {menuDivider}
               {!props.authenticated && props.onLogin ? (
                 <ReaderMenuAction
-                  icon={<LogIn className="h-4 w-4" />}
+                  icon={<LogIn size={17} />}
                   label={t('common.signIn')}
                   onClick={() => {
                     setMenuOpen(false)
@@ -3311,7 +3464,7 @@ function Header(props: {
               ) : null}
               {props.authenticated && props.onLogout ? (
                 <ReaderMenuAction
-                  icon={<LogOut className="h-4 w-4" />}
+                  icon={<LogOut size={17} />}
                   label={t('common.signOut')}
                   onClick={() => {
                     setMenuOpen(false)
@@ -3324,7 +3477,7 @@ function Header(props: {
         </div>
         {props.onExit ? (
           <button className={iconButtonClass} type="button" onClick={props.onExit} title={t('common.backToShelf')}>
-            <X className="h-4 w-4" />
+            <X size={17} />
           </button>
         ) : null}
       </div>
@@ -3336,21 +3489,23 @@ function Header(props: {
 function ReaderMenuAction({
   icon,
   label,
+  selected,
   onClick,
 }: {
-  icon: ReactNode
+  icon?: ReactNode
   label: string
+  selected?: boolean
   onClick(): void
 }) {
-  const { t } = useI18n()
   return (
     <button
       className={menuRowClass}
       type="button"
       onClick={onClick}
     >
-      <span className="text-muted">{icon}</span>
-      {label}
+      {icon ? <span className={selected ? 'text-accent-text' : 'text-muted'}>{icon}</span> : null}
+      <span className={`flex-1 ${selected ? 'font-medium text-accent-text' : ''}`}>{label}</span>
+      {selected ? <Check size={15} className="shrink-0 text-accent-text" /> : null}
     </button>
   )
 }
@@ -4980,6 +5135,7 @@ export function ReaderSettingsDialog(props: {
   ]
   if (props.config.translate) sections.push({ id: 'translation', label: t('settings.translation') })
   if (props.config.tts) sections.push({ id: 'tts', label: t('settings.tts') })
+  sections.push({ id: 'ai-providers', label: t('settings.aiProviders') })
   if (props.config.chat) sections.push({ id: 'chat', label: t('settings.chat') })
   if (props.extensionSettings?.length || props.extensionCommands?.length || props.extensionPanels?.length) {
     sections.push({ id: 'extensions', label: t('settings.extensions') })
@@ -5139,6 +5295,9 @@ function SettingsSectionForm({
   if (section === 'cloud') {
     return <CloudDriveSettings />
   }
+  if (section === 'ai-providers') {
+    return <AIProvidersSettingsForm config={config} setConfig={setConfig} />
+  }
   if (section === 'translation') {
     return (
       <SettingsForm>
@@ -5160,11 +5319,13 @@ function SettingsSectionForm({
                 ]}
               />
               {config.translationProvider === 'ai' ? (
-                <>
-                  <SettingsTextRow label={t('settings.apiUrl')} value={config.baseURL} onChange={value => update('baseURL', value)} />
-                  <SettingsTextRow label={t('settings.apiKey')} value={config.apiKey} type="password" onChange={value => update('apiKey', value)} />
-                  <SettingsTextRow label={t('settings.model')} value={config.model} onChange={value => update('model', value)} placeholder="gpt-4o-mini" />
-                </>
+                <ConfiguredModelSelectRow
+                  label={t('settings.translationModel')}
+                  config={config}
+                  providerId={config.translationAIProvider}
+                  model={config.translationAIModel}
+                  onChange={(provider, value) => setConfig({ ...config, translationAIProvider: provider, translationAIModel: value })}
+                />
               ) : (
                 <div className="px-4 py-3 text-ui-sm leading-relaxed text-muted sm:px-5">
                   {t('settings.browserTranslationDescription')}
@@ -5212,9 +5373,13 @@ function SettingsSectionForm({
     return (
       <SettingsForm>
         <SettingsGroup title={t('settings.modelService')}>
-          <SettingsTextRow label={t('settings.apiUrl')} value={config.chatBaseURL} onChange={value => update('chatBaseURL', value)} />
-          <SettingsTextRow label={t('settings.apiKey')} value={config.chatAPIKey} type="password" onChange={value => update('chatAPIKey', value)} />
-          <SettingsTextRow label={t('settings.model')} value={config.chatModel} onChange={value => update('chatModel', value)} placeholder="gpt-4o-mini" />
+          <ConfiguredModelSelectRow
+            label={t('settings.chatModel')}
+            config={config}
+            providerId={config.chatProvider}
+            model={config.chatModel}
+            onChange={(provider, value) => setConfig({ ...config, chatProvider: provider, chatModel: value })}
+          />
           <SettingsTextRow label={t('settings.maxContextChars')} value={config.chatMaxContentChars} type="number" onChange={value => update('chatMaxContentChars', value)} />
         </SettingsGroup>
         {STORY_MEMORY_ENABLED ? (
@@ -5261,6 +5426,174 @@ function SettingsSectionForm({
       <SettingsGroup title={t('settings.developerOptions')}>
         <SettingsToggleRow label={t('settings.debugLogs')} description={t('settings.debugLogsDescription')} checked={config.debug} onChange={value => update('debug', value)} />
       </SettingsGroup>
+    </SettingsForm>
+  )
+}
+
+function aiProviderKindLabel(kind: AIProviderKind, t: Translate): string {
+  return kind === 'custom' ? t('settings.customProvider') : AI_PROVIDER_KIND_LABELS[kind]
+}
+
+function configuredAIModelOptions(config: DemoConfig, customLabel: string): Array<{ providerId: string; providerName: string; model: string }> {
+  const options: Array<{ providerId: string; providerName: string; model: string }> = []
+  for (const provider of config.aiProviders) {
+    const providerName = provider.name.trim() || (provider.kind === 'custom' ? customLabel : AI_PROVIDER_KIND_LABELS[provider.kind])
+    for (const model of provider.models) {
+      const trimmed = model.trim()
+      if (trimmed) options.push({ providerId: provider.id, providerName, model: trimmed })
+    }
+  }
+  return options
+}
+
+function ConfiguredModelSelectRow({
+  label,
+  config,
+  providerId,
+  model,
+  onChange,
+}: {
+  label: string
+  config: DemoConfig
+  providerId: string
+  model: string
+  onChange(providerId: string, model: string): void
+}) {
+  const { t } = useI18n()
+  const available = configuredAIModelOptions(config, t('settings.customProvider'))
+  if (available.length === 0) {
+    return (
+      <div className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+        <span className="text-ui-md font-medium text-ink-soft">{label}</span>
+        <span className="text-ui-sm text-muted">{t('settings.noConfiguredModels')}</span>
+      </div>
+    )
+  }
+  const selectedModel = model.trim()
+  const matched = available.some(option => option.providerId === providerId && option.model === selectedModel)
+  const options: Array<[string, string]> = [
+    ...(matched ? [] : [['', t('settings.selectModel')] as [string, string]]),
+    ...available.map((option): [string, string] => [`${option.providerId}\n${option.model}`, `${option.providerName} / ${option.model}`]),
+  ]
+  return (
+    <SettingsSelectRow
+      label={label}
+      value={matched ? `${providerId}\n${selectedModel}` : ''}
+      options={options}
+      onChange={value => {
+        const separator = value.indexOf('\n')
+        if (separator < 0) return
+        onChange(value.slice(0, separator), value.slice(separator + 1))
+      }}
+    />
+  )
+}
+
+function AIProvidersSettingsForm({ config, setConfig }: { config: DemoConfig; setConfig(config: DemoConfig): void }) {
+  const { t } = useI18n()
+  const updateProvider = (id: string, patch: Partial<AIProviderConfig>) => {
+    setConfig({ ...config, aiProviders: config.aiProviders.map(provider => (provider.id === id ? { ...provider, ...patch } : provider)) })
+  }
+  const removeProvider = (id: string) => {
+    if (config.aiProviders.length <= 1) return
+    const providers = config.aiProviders.filter(provider => provider.id !== id)
+    const fallback = providers[0].id
+    setConfig({
+      ...config,
+      aiProviders: providers,
+      chatProvider: config.chatProvider === id ? fallback : config.chatProvider,
+      translationAIProvider: config.translationAIProvider === id ? fallback : config.translationAIProvider,
+    })
+  }
+  const addProvider = () => {
+    setConfig({ ...config, aiProviders: [...config.aiProviders, createEmptyAIProvider(nextAIProviderId(config.aiProviders))] })
+  }
+  return (
+    <SettingsForm>
+      {config.aiProviders.map(provider => {
+        const kindLabel = aiProviderKindLabel(provider.kind, t)
+        return (
+          <SettingsGroup key={provider.id} title={provider.name.trim() || kindLabel}>
+            <SettingsSelectRow
+              label={t('settings.providerKind')}
+              value={provider.kind}
+              options={[
+                ['custom', t('settings.customProvider')],
+                ['openai', 'OpenAI'],
+                ['deepseek', 'DeepSeek'],
+                ['openrouter', 'OpenRouter'],
+                ['siliconflow', 'SiliconFlow'],
+              ]}
+              onChange={value => {
+                const kind = value as AIProviderKind
+                const patch: Partial<AIProviderConfig> = { kind }
+                if (kind !== 'custom') patch.baseURL = AI_PROVIDER_PRESET_BASE_URLS[kind]
+                if (!provider.name.trim() || provider.name === kindLabel) patch.name = aiProviderKindLabel(kind, t)
+                updateProvider(provider.id, patch)
+              }}
+            />
+            <div className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+              <span className="shrink-0 text-ui-md font-medium text-ink-soft">{t('settings.providerName')}</span>
+              <span className="flex min-w-0 max-w-md basis-2/3 items-center gap-2">
+                <input
+                  className={`${inputClass} min-w-0 flex-1 !border-line bg-bg hover:!border-line-strong focus:!border-accent`}
+                  type="text"
+                  value={provider.name}
+                  placeholder={kindLabel}
+                  onChange={event => updateProvider(provider.id, { name: event.target.value })}
+                />
+                <button
+                  className={iconButtonClass}
+                  type="button"
+                  disabled={config.aiProviders.length <= 1}
+                  aria-label={t('settings.removeProvider')}
+                  onClick={() => removeProvider(provider.id)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </span>
+            </div>
+            {provider.kind === 'custom' ? (
+              <SettingsTextRow label={t('settings.apiUrl')} value={provider.baseURL} onChange={value => updateProvider(provider.id, { baseURL: value })} />
+            ) : null}
+            <SettingsTextRow label={t('settings.apiKey')} value={provider.apiKey} type="password" onChange={value => updateProvider(provider.id, { apiKey: value })} />
+            {provider.models.map((model, index) => (
+              <div key={index} className="flex min-h-16 items-center justify-between gap-4 px-4 py-3 sm:px-5">
+                <span className="shrink-0 text-ui-md font-medium text-ink-soft">{index === 0 ? t('settings.models') : ''}</span>
+                <span className="flex min-w-0 max-w-md basis-2/3 items-center gap-2">
+                  <input
+                    className={`${inputClass} min-w-0 flex-1 !border-line bg-bg hover:!border-line-strong focus:!border-accent`}
+                    type="text"
+                    value={model}
+                    placeholder="gpt-4o-mini"
+                    onChange={event => updateProvider(provider.id, { models: provider.models.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)) })}
+                  />
+                  <button
+                    className={iconButtonClass}
+                    type="button"
+                    aria-label={t('settings.removeModel')}
+                    onClick={() => updateProvider(provider.id, { models: provider.models.filter((_, itemIndex) => itemIndex !== index) })}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </span>
+              </div>
+            ))}
+            <div className="px-4 py-3 sm:px-5">
+              <button className={toolbarButtonClass} type="button" onClick={() => updateProvider(provider.id, { models: [...provider.models, ''] })}>
+                <Plus className="h-4 w-4" />
+                {t('settings.addModel')}
+              </button>
+            </div>
+          </SettingsGroup>
+        )
+      })}
+      <div>
+        <button className={toolbarButtonClass} type="button" onClick={addProvider}>
+          <Plus className="h-4 w-4" />
+          {t('settings.addProvider')}
+        </button>
+      </div>
     </SettingsForm>
   )
 }
@@ -5901,28 +6234,109 @@ export function saveReaderConfig(config: DemoConfig) {
   notifyReaderConfigChanged()
 }
 
+interface LegacyAIConfigValues {
+  baseURL: string
+  apiKey: string
+  model: string
+  chatBaseURL: string
+  chatAPIKey: string
+  chatModel: string
+}
+
+function normalizeAIProviders(value: unknown): AIProviderConfig[] {
+  if (!Array.isArray(value)) return []
+  const providers: AIProviderConfig[] = []
+  const usedIds = new Set<string>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    let id = typeof record.id === 'string' ? record.id.trim() : ''
+    if (!id || usedIds.has(id)) id = nextAIProviderId(providers)
+    usedIds.add(id)
+    providers.push({
+      id,
+      kind: isAIProviderKind(record.kind) ? record.kind : 'custom',
+      name: typeof record.name === 'string' ? record.name : '',
+      baseURL: typeof record.baseURL === 'string' ? record.baseURL : '',
+      apiKey: typeof record.apiKey === 'string' ? record.apiKey : '',
+      models: Array.isArray(record.models)
+        ? record.models.filter((model): model is string => typeof model === 'string' && Boolean(model.trim()))
+        : [],
+    })
+  }
+  return providers
+}
+
+function migrateAIProviderConfig(config: DemoConfig, legacy: LegacyAIConfigValues): DemoConfig {
+  const providers = normalizeAIProviders(config.aiProviders)
+  let { chatProvider, chatModel, translationAIProvider, translationAIModel } = config
+  if (legacy.chatBaseURL.trim() || legacy.chatAPIKey.trim() || legacy.chatModel.trim()) {
+    const provider: AIProviderConfig = {
+      id: nextAIProviderId(providers),
+      kind: 'custom',
+      name: '',
+      baseURL: legacy.chatBaseURL,
+      apiKey: legacy.chatAPIKey,
+      models: legacy.chatModel.trim() ? [legacy.chatModel.trim()] : [],
+    }
+    providers.push(provider)
+    chatProvider = provider.id
+    chatModel = legacy.chatModel.trim()
+  }
+  if (legacy.baseURL.trim() || legacy.apiKey.trim() || legacy.model.trim()) {
+    const provider: AIProviderConfig = {
+      id: nextAIProviderId(providers),
+      kind: 'custom',
+      name: '',
+      baseURL: legacy.baseURL,
+      apiKey: legacy.apiKey,
+      models: legacy.model.trim() ? [legacy.model.trim()] : [],
+    }
+    providers.push(provider)
+    translationAIProvider = provider.id
+    translationAIModel = legacy.model.trim()
+  }
+  if (providers.length === 0) providers.push(createEmptyAIProvider('provider-1'))
+  if (!providers.some(provider => provider.id === chatProvider)) chatProvider = providers[0].id
+  if (!providers.some(provider => provider.id === translationAIProvider)) translationAIProvider = providers[0].id
+  return { ...config, aiProviders: providers, chatProvider, chatModel, translationAIProvider, translationAIModel }
+}
+
 function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
   const {
     trial: _legacyTrial,
     trialPages: _legacyTrialPages,
     theme: _legacyReaderTheme,
     fixedPainter: _legacyFixedPainter,
+    baseURL: legacyBaseURL,
+    apiKey: legacyAPIKey,
+    model: legacyModel,
+    chatBaseURL: legacyChatBaseURL,
+    chatAPIKey: legacyChatAPIKey,
+    chatModel: legacyChatModel,
     ...supportedValue
   } = value as Partial<DemoConfig> & {
     trial?: unknown
     trialPages?: unknown
     theme?: unknown
     fixedPainter?: unknown
+    baseURL?: unknown
+    apiKey?: unknown
+    model?: unknown
+    chatBaseURL?: unknown
+    chatAPIKey?: unknown
+    chatModel?: unknown
   }
   const translationProvider = normalizeTranslationProvider(
     supportedValue.translationProvider,
-    typeof supportedValue.apiKey === 'string' && supportedValue.apiKey.trim() ? 'ai' : 'browser',
+    typeof legacyAPIKey === 'string' && legacyAPIKey.trim() ? 'ai' : 'browser',
   )
   const migratedBrowserTranslation = supportedValue.translationProvider === undefined && translationProvider === 'browser'
   let config: DemoConfig = {
     ...defaultConfig,
     ...supportedValue,
     reflowablePageFit: normalizeReflowablePageFit(supportedValue.reflowablePageFit),
+    selectionGranularity: normalizeSelectionGranularity(supportedValue.selectionGranularity),
     translationProvider,
     translationRuntimeEnabled: migratedBrowserTranslation
       ? false
@@ -5931,6 +6345,14 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
     extensionInstallations: normalizeDemoExtensionInstallations(supportedValue.extensionInstallations),
     extensionSettings: normalizeDemoExtensionSettings(supportedValue.extensionSettings),
   }
+  config = migrateAIProviderConfig(config, {
+    baseURL: typeof legacyBaseURL === 'string' ? legacyBaseURL : '',
+    apiKey: typeof legacyAPIKey === 'string' ? legacyAPIKey : '',
+    model: typeof legacyModel === 'string' ? legacyModel : '',
+    chatBaseURL: typeof legacyChatBaseURL === 'string' ? legacyChatBaseURL : '',
+    chatAPIKey: typeof legacyChatAPIKey === 'string' ? legacyChatAPIKey : '',
+    chatModel: typeof legacyChatModel === 'string' ? legacyChatModel : '',
+  })
   const storedExtensionDefaultsVersion = Number(supportedValue.extensionDefaultsVersion) || 0
   if (storedExtensionDefaultsVersion < TRANSLATION_DEFAULTS_VERSION) {
     config = {
@@ -6007,6 +6429,11 @@ function normalizeDemoExtensionInstallations(value: unknown): DemoExtensionInsta
 function normalizeReflowablePageFit(value: unknown): ReflowablePageFitMode {
   if (value === 'auto' || value === 'paper' || value === 'viewport') return value
   return defaultConfig.reflowablePageFit
+}
+
+function normalizeSelectionGranularity(value: unknown): SelectionGranularity {
+  if (value === 'word' || value === 'sentence' || value === 'paragraph') return value
+  return defaultConfig.selectionGranularity
 }
 
 function normalizeTranslationTargetLanguage(value: unknown): DemoConfig['translationTargetLanguage'] {

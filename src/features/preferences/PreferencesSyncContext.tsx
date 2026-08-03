@@ -42,6 +42,14 @@ type ExtensionInstallationPreference = {
   version?: string
 }
 
+export type CloudSyncedAIProvider = {
+  id: string
+  kind: string
+  name: string
+  baseURL: string
+  models: string[]
+}
+
 export type CloudPreferenceSections = {
   appearance: {
     theme: AppTheme
@@ -70,6 +78,8 @@ export type CloudPreferenceSections = {
     mode: 'bilingual' | 'replace'
     translateTOC: boolean
     prefetchPages: string
+    aiProvider: string
+    aiModel: string
   }
   tts: {
     enabled: boolean
@@ -80,6 +90,11 @@ export type CloudPreferenceSections = {
   chat: {
     enabled: boolean
     maxContentChars: string
+    provider: string
+    model: string
+  }
+  aiProviders: {
+    providers: CloudSyncedAIProvider[]
   }
   extensions: {
     installations: Record<string, ExtensionInstallationPreference>
@@ -342,6 +357,8 @@ function readLocalPreferences(
       mode: config.translateMode === 'replace' ? 'replace' : 'bilingual',
       translateTOC: config.translateTOC === true,
       prefetchPages: stringValue(config.prefetchPages, '2'),
+      aiProvider: stringValue(config.translationAIProvider, ''),
+      aiModel: stringValue(config.translationAIModel, ''),
     },
     tts: {
       enabled: tts,
@@ -352,6 +369,13 @@ function readLocalPreferences(
     chat: {
       enabled: chat,
       maxContentChars: stringValue(config.chatMaxContentChars, '6000'),
+      provider: stringValue(config.chatProvider, ''),
+      model: stringValue(config.chatModel, ''),
+    },
+    aiProviders: {
+      providers: (Array.isArray(config.aiProviders) ? config.aiProviders : [])
+        .map(cloudAIProvider)
+        .filter((provider): provider is CloudSyncedAIProvider => provider !== null),
     },
     extensions: {
       installations: Object.fromEntries([
@@ -394,6 +418,8 @@ function applyCloudPreferences(
     config.translateMode = settings.translation.mode
     config.translateTOC = settings.translation.translateTOC
     config.prefetchPages = settings.translation.prefetchPages
+    if (typeof settings.translation.aiProvider === 'string') config.translationAIProvider = settings.translation.aiProvider
+    if (typeof settings.translation.aiModel === 'string') config.translationAIModel = settings.translation.aiModel
   }
   if (settings.tts) {
     config.tts = settings.tts.enabled
@@ -404,6 +430,19 @@ function applyCloudPreferences(
   if (settings.chat) {
     config.chat = settings.chat.enabled
     config.chatMaxContentChars = settings.chat.maxContentChars
+    if (typeof settings.chat.provider === 'string') config.chatProvider = settings.chat.provider
+    if (typeof settings.chat.model === 'string') config.chatModel = settings.chat.model
+  }
+  if (settings.aiProviders && Array.isArray(settings.aiProviders.providers)) {
+    const current = Array.isArray(config.aiProviders) ? config.aiProviders : []
+    const apiKeys = new Map<string, string>()
+    for (const item of current) {
+      if (isRecord(item) && typeof item.id === 'string' && typeof item.apiKey === 'string') {
+        apiKeys.set(item.id, item.apiKey)
+      }
+    }
+    // API keys are device-local secrets and never synced; keep the locally stored key per provider id.
+    config.aiProviders = settings.aiProviders.providers.map(provider => ({ ...provider, apiKey: apiKeys.get(provider.id) ?? '' }))
   }
   if (settings.extensions) {
     const current = isRecord(config.extensionInstallations) ? config.extensionInstallations : {}
@@ -425,6 +464,17 @@ function applyCloudPreferences(
   }
   localStorage.setItem(READER_CONFIG_STORAGE_KEY, JSON.stringify(config))
   window.dispatchEvent(new Event(READER_CONFIG_CHANGED_EVENT))
+}
+
+function cloudAIProvider(value: unknown): CloudSyncedAIProvider | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return null
+  return {
+    id: value.id,
+    kind: typeof value.kind === 'string' ? value.kind : 'custom',
+    name: typeof value.name === 'string' ? value.name : '',
+    baseURL: typeof value.baseURL === 'string' ? value.baseURL : '',
+    models: Array.isArray(value.models) ? value.models.filter((model): model is string => typeof model === 'string') : [],
+  }
 }
 
 function installationPreference(

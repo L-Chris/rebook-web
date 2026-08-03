@@ -2,6 +2,13 @@
 // z-index scale: scrims z-60 < panels z-70 < popovers/menus z-80 < dialogs z-90.
 // (The auto-hiding reader header stays z-50; the reader panel resize handle stays z-10.)
 export const iconButtonClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors duration-150 ease-out hover:bg-surface-muted hover:text-ink active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
+// Toggleable icon buttons (e.g. reader header translation/chat switches) get an
+// accent selected state instead of the plain muted hover style.
+export function selectableIconButtonClass(isActive: boolean) {
+  return isActive
+    ? 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-text transition-colors duration-150 ease-out hover:bg-accent-softer active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
+    : iconButtonClass
+}
 export const roundIconButtonClass = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition-colors duration-150 ease-out hover:bg-surface-muted hover:text-ink active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
 export const toolbarButtonClass = 'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-ui-md font-medium text-ink-soft transition-colors duration-150 ease-out hover:bg-surface-muted hover:text-ink active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
 export const primaryButtonClass = 'inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-accent px-3 text-ui-md font-medium text-accent-contrast transition-colors duration-150 ease-out hover:bg-accent-hover active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-softer'
