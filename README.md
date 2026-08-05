@@ -1,91 +1,96 @@
-<h1 align="center">rebook-web</h1>
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
+<h1 id="rebook-web" align="center">rebook-web</h1>
 
 <p align="center">
-  一款高性能、AI 原生、本地优先的 Web 电子书阅读器，基于
-  <a href="https://github.com/L-Chris/rebook">rebook</a> 构建。
+  The web edition of <a href="https://github.com/L-Chris/torto">Torto</a> — a fast, AI-native, local-first ebook reader that runs entirely in your browser.<br>
+  Built on the <a href="https://github.com/L-Chris/rebook">rebook</a> reading kernel.
 </p>
 
 <p align="center">
-  <strong>⚡ 高性能 · 🤖 AI 阅读 · 🌐 智能翻译 · ☁️ 云端同步</strong>
+  <a href="https://read.rethinkos.com/"><img src="https://img.shields.io/badge/demo-read.rethinkos.com-3fa97c" alt="Online demo"></a>
+  <img src="https://img.shields.io/badge/platform-Web-5b6ee1" alt="Web platform">
+  <img src="https://img.shields.io/badge/UI-React%2019-7c3aed" alt="Built with React 19">
 </p>
 
 <p align="center">
-  无需安装，打开浏览器即可建立自己的数字书架；既可以完全离线阅读，
-  也可以按需连接 AI 和 WebDAV。
+  <a href="#features">Features</a> •
+  <a href="#supported-formats">Formats</a> •
+  <a href="#try-it-online">Try it online</a> •
+  <a href="#privacy">Privacy</a> •
+  <a href="#development">Development</a> •
+  <a href="#related-projects">Related projects</a>
 </p>
 
-<p align="center">
-  <a href="https://read.rethinkos.com/"><strong>在线体验</strong></a>
-  ·
-  <a href="https://github.com/L-Chris/rebook/issues">反馈问题</a>
-</p>
+## About
 
-<p align="center">
-  <a href="https://linux.do" aria-label="LINUX DO">
-    <img src="https://img.shields.io/badge/LINUX-DO-FFB003.svg" alt="LINUX DO">
-  </a>
-</p>
+rebook-web brings the Torto reading experience to the browser: open a tab and you have a digital bookshelf — no installation required. It works fully offline, and connects to AI providers and WebDAV storage only when you ask it to.
 
-## ✨ 特性
+All parsing, layout, and rendering runs client-side on the standalone [rebook](https://github.com/L-Chris/rebook) kernel, with continuous optimization for page turns, reflow, zooming, and window resizing.
 
-1. **⚡ 高性能阅读体验**
-   - 基于独立的 [rebook](https://github.com/L-Chris/rebook) 阅读内核
-   - 针对翻页、重排、缩放和浏览器窗口变化持续优化
-   - 支持分页、滚动、单页和双页等阅读布局
+## Features
 
-2. **🤖 深度 AI 阅读**
-   - 提供 `/summary`、`/search`、`/rewrite`、`/extract` 等快捷命令
-   - 可以引用当前章节或指定书籍内容，并附加图片一起提问
-   - AI 回答支持可点击的原文引用，可直接定位到对应段落
+<div align="left">✅ Implemented</div>
 
-3. **🌐 双模式智能翻译**
-   - 支持浏览器内置翻译，浏览器支持时无需配置 API
-   - 支持自定义 AI 翻译服务
-   - 可选择双语对照或替换原文，并支持翻译目录
+| **Feature** | **Description** | **Status** |
+| --- | --- | --- |
+| **High-performance reading** | Independent rebook kernel with paged, scrolled, single-page, and two-page layouts, tuned for smooth turns and reflow. | ✅ |
+| **Deep AI reading** | Slash commands like `/summary`, `/search`, `/rewrite`, and `/extract`; quote the current chapter or any book with images attached; answers include clickable citations that jump to the source paragraph. | ✅ Optional |
+| **Dual-mode translation** | Built-in browser translation with zero configuration, or your own AI translation service; bilingual or replacement mode, including the table of contents. | ✅ Optional |
+| **Optional cloud bookshelf** | Import and read without an account — books stay in the browser; sign in to sync through WebDAV providers such as Jianguoyun and Nextcloud, and pick up where you left off on any device. | ✅ Optional |
+| **Complete reading toolkit** | Local bookshelf, book search, table-of-contents navigation, full-book search, and resume reading; customizable fonts, sizes, themes, and page layouts; text-to-speech, progress tracking, and multiple cover-extraction strategies. | ✅ |
+| **Extensible and cross-device** | Built-in extension store for translation, AI chat, and TTS capabilities; three-column desktop layout and drawer-based mobile interaction; Light / Dark themes and 简体中文 / English UI. | ✅ |
 
-4. **☁️ 可选的云端书架**
-   - 不登录也能导入和阅读，书籍默认保存在当前浏览器
-   - 登录后可连接坚果云、Nextcloud 等 WebDAV 服务
-   - 自动同步本地书籍，在不同设备间继续阅读
+## Supported formats
 
-5. **📚 完整的阅读工具**
-   - 本地书架、书籍搜索、目录导航、全文搜索和断点续读
-   - 自定义字体、字号、主题和页面布局
-   - 支持文字朗读、阅读进度记录与多种封面提取方式
-
-6. **🧩 可扩展、跨设备**
-   - 内置扩展商店，可按需启用翻译、AI 对话和朗读能力
-   - 桌面端三栏布局与移动端抽屉交互
-   - 支持 Light / Dark 主题和简体中文 / English 界面
-
-## 📖 支持格式
-
-| 格式 | 支持情况 |
+| Format | Support |
 | --- | --- |
-| EPUB | 支持 |
-| MOBI / AZW3 | 支持 |
-| FB2 | 支持 |
-| PDF | 支持 |
-| CBZ | 支持 |
+| EPUB | ✅ |
+| MOBI / AZW3 | ✅ |
+| FB2 | ✅ |
+| PDF | ✅ |
+| CBZ | ✅ |
 
-## 🚀 本地运行
+## Try it online
 
-需要 Node.js 和 npm：
+Use the hosted build at **[read.rethinkos.com](https://read.rethinkos.com/)** — import a book and start reading; nothing is uploaded unless you enable cloud sync or AI features.
+
+To run your own copy, you need Node.js, npm, and a local checkout of the [rebook](https://github.com/L-Chris/rebook) kernel next to this repository:
 
 ```bash
 npm install
 npm run dev
 ```
 
-默认开发地址为 `http://127.0.0.1:3132/`。
-
-## 🛠️ 构建
+The dev server listens on `http://127.0.0.1:3132/`. Build a production bundle with:
 
 ```bash
 npm run build
 ```
 
-## 🔗 相关项目
+## Privacy
 
-- [rebook](https://github.com/L-Chris/rebook)：跨平台电子书解析与阅读内核
-- [rebook-service](https://github.com/L-Chris/rebook-service)：账号、云端书架与可选 AI 服务
+- Imported books and reading data stay in your browser's local storage by default.
+- AI, translation, and cloud sync are opt-in. Content leaves the browser only when you configure and actively use a provider.
+- WebDAV traffic goes directly from your browser to the service you choose; there is no rebook-operated relay.
+
+## Development
+
+rebook-web is a React 19 + Vite + Tailwind CSS application. The reading kernel is consumed as a local `file:../rebook` dependency, so clone both repositories side by side before installing.
+
+```bash
+npm run dev         # start the dev server
+npm run build       # type-check and build for production
+npm run typecheck   # types only
+```
+
+Please report reproducible problems in [Issues](https://github.com/L-Chris/rebook-web/issues). Include the book format, screenshots, and reproduction steps, but do not upload complete copyrighted books.
+
+## Related projects
+
+- [rebook](https://github.com/L-Chris/rebook) — cross-platform ebook parsing and reading kernel
+- [Torto](https://github.com/L-Chris/torto) — the native desktop edition for Windows and macOS
+- [rebook-service](https://github.com/L-Chris/rebook-service) — accounts, cloud bookshelf, and optional AI services
+- [torto-site](https://github.com/L-Chris/torto-site) — the Torto official website
