@@ -2,11 +2,11 @@
   <strong>简体中文</strong> · <a href="README.md">English</a>
 </p>
 
-<h1 id="rebook-web" align="center">rebook-web</h1>
+<h1 id="torto-web" align="center">torto-web</h1>
 
 <p align="center">
-  <a href="https://github.com/L-Chris/torto">Torto（小龟阅读）</a>的 Web 版——高性能、AI 原生、本地优先的浏览器电子书阅读器。<br>
-  基于 <a href="https://github.com/L-Chris/rebook">rebook</a> 阅读内核构建。
+  <a href="https://github.com/TortoTech/torto">Torto（小龟阅读）</a>的 Web 版——高性能、AI 原生、本地优先的浏览器电子书阅读器。<br>
+  基于 <a href="https://github.com/TortoTech/rebook">rebook</a> 阅读内核构建。
 </p>
 
 <p align="center">
@@ -26,9 +26,9 @@
 
 ## 关于
 
-rebook-web 把 Torto 的阅读体验带进了浏览器：打开一个标签页，就拥有了自己的数字书架——无需安装。它既可以完全离线阅读，也可以按需连接 AI 和 WebDAV。
+torto-web 把 Torto 的阅读体验带进了浏览器：打开一个标签页，就拥有了自己的数字书架——无需安装。它既可以完全离线阅读，也可以按需连接 AI 和 WebDAV。
 
-所有解析、排版与渲染都在浏览器内由独立的 [rebook](https://github.com/L-Chris/rebook) 内核完成，并针对翻页、重排、缩放和浏览器窗口变化持续优化。
+所有解析、排版与渲染都在浏览器内由独立的 [rebook](https://github.com/TortoTech/rebook) 内核完成，并针对翻页、重排、缩放和浏览器窗口变化持续优化。
 
 ## ✨ 特性
 
@@ -57,7 +57,7 @@ rebook-web 把 Torto 的阅读体验带进了浏览器：打开一个标签页�
 
 直接使用托管版本 **[read.rethinkos.com](https://read.rethinkos.com/)**——导入书籍即可开始阅读；除非主动开启云同步或 AI 功能，否则任何内容都不会上传。
 
-如需自己部署，需要 Node.js、npm，并在本仓库旁并排放置 [rebook](https://github.com/L-Chris/rebook) 内核的源码：
+如需自己部署，需要 Node.js、npm，并在本仓库旁并排放置 [rebook](https://github.com/TortoTech/rebook) 内核的源码：
 
 ```bash
 npm install
@@ -78,7 +78,7 @@ npm run build
 
 ## 🛠️ 开发
 
-rebook-web 基于 React 19 + Vite + Tailwind CSS。阅读内核以 `file:../rebook` 本地依赖方式引入，因此请把两个仓库并排克隆后再安装依赖。
+torto-web 基于 React 19 + Vite + Tailwind CSS。阅读内核以 `file:../rebook` 本地依赖方式引入，因此请把两个仓库并排克隆后再安装依赖。
 
 ```bash
 npm run dev         # 启动开发服务器
@@ -86,11 +86,11 @@ npm run build       # 类型检查并构建生产版本
 npm run typecheck   # 仅类型检查
 ```
 
-请在 [Issues](https://github.com/L-Chris/rebook-web/issues) 反馈可复现的问题，附上书籍格式、截图与复现步骤，但请勿上传完整版权书籍。
+请在 [Issues](https://github.com/TortoTech/torto-web/issues) 反馈可复现的问题，附上书籍格式、截图与复现步骤，但请勿上传完整版权书籍。
 
 ## 🔗 相关项目
 
-- [rebook](https://github.com/L-Chris/rebook)：跨平台电子书解析与阅读内核
-- [Torto](https://github.com/L-Chris/torto)：Windows 与 macOS 原生桌面版
-- [rebook-service](https://github.com/L-Chris/rebook-service)：账号、云端书架与可选 AI 服务
-- [torto-site](https://github.com/L-Chris/torto-site)：Torto 官方网站
+- [rebook](https://github.com/TortoTech/rebook)：跨平台电子书解析与阅读内核
+- [Torto](https://github.com/TortoTech/torto)：Windows 与 macOS 原生桌面版
+- [rebook-service](https://github.com/TortoTech/rebook-service)：账号、云端书架与可选 AI 服务
+- [tortotech.github.io](https://github.com/TortoTech/tortotech.github.io)：Torto 官方网站

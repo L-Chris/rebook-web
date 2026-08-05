@@ -2,11 +2,11 @@
   <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-<h1 id="rebook-web" align="center">rebook-web</h1>
+<h1 id="torto-web" align="center">torto-web</h1>
 
 <p align="center">
-  The web edition of <a href="https://github.com/L-Chris/torto">Torto</a> — a fast, AI-native, local-first ebook reader that runs entirely in your browser.<br>
-  Built on the <a href="https://github.com/L-Chris/rebook">rebook</a> reading kernel.
+  The web edition of <a href="https://github.com/TortoTech/torto">Torto</a> — a fast, AI-native, local-first ebook reader that runs entirely in your browser.<br>
+  Built on the <a href="https://github.com/TortoTech/rebook">rebook</a> reading kernel.
 </p>
 
 <p align="center">
@@ -26,9 +26,9 @@
 
 ## About
 
-rebook-web brings the Torto reading experience to the browser: open a tab and you have a digital bookshelf — no installation required. It works fully offline, and connects to AI providers and WebDAV storage only when you ask it to.
+torto-web brings the Torto reading experience to the browser: open a tab and you have a digital bookshelf — no installation required. It works fully offline, and connects to AI providers and WebDAV storage only when you ask it to.
 
-All parsing, layout, and rendering runs client-side on the standalone [rebook](https://github.com/L-Chris/rebook) kernel, with continuous optimization for page turns, reflow, zooming, and window resizing.
+All parsing, layout, and rendering runs client-side on the standalone [rebook](https://github.com/TortoTech/rebook) kernel, with continuous optimization for page turns, reflow, zooming, and window resizing.
 
 ## Features
 
@@ -57,7 +57,7 @@ All parsing, layout, and rendering runs client-side on the standalone [rebook](h
 
 Use the hosted build at **[read.rethinkos.com](https://read.rethinkos.com/)** — import a book and start reading; nothing is uploaded unless you enable cloud sync or AI features.
 
-To run your own copy, you need Node.js, npm, and a local checkout of the [rebook](https://github.com/L-Chris/rebook) kernel next to this repository:
+To run your own copy, you need Node.js, npm, and a local checkout of the [rebook](https://github.com/TortoTech/rebook) kernel next to this repository:
 
 ```bash
 npm install
@@ -78,7 +78,7 @@ npm run build
 
 ## Development
 
-rebook-web is a React 19 + Vite + Tailwind CSS application. The reading kernel is consumed as a local `file:../rebook` dependency, so clone both repositories side by side before installing.
+torto-web is a React 19 + Vite + Tailwind CSS application. The reading kernel is consumed as a local `file:../rebook` dependency, so clone both repositories side by side before installing.
 
 ```bash
 npm run dev         # start the dev server
@@ -86,11 +86,11 @@ npm run build       # type-check and build for production
 npm run typecheck   # types only
 ```
 
-Please report reproducible problems in [Issues](https://github.com/L-Chris/rebook-web/issues). Include the book format, screenshots, and reproduction steps, but do not upload complete copyrighted books.
+Please report reproducible problems in [Issues](https://github.com/TortoTech/torto-web/issues). Include the book format, screenshots, and reproduction steps, but do not upload complete copyrighted books.
 
 ## Related projects
 
-- [rebook](https://github.com/L-Chris/rebook) — cross-platform ebook parsing and reading kernel
-- [Torto](https://github.com/L-Chris/torto) — the native desktop edition for Windows and macOS
-- [rebook-service](https://github.com/L-Chris/rebook-service) — accounts, cloud bookshelf, and optional AI services
-- [torto-site](https://github.com/L-Chris/torto-site) — the Torto official website
+- [rebook](https://github.com/TortoTech/rebook) — cross-platform ebook parsing and reading kernel
+- [Torto](https://github.com/TortoTech/torto) — the native desktop edition for Windows and macOS
+- [rebook-service](https://github.com/TortoTech/rebook-service) — accounts, cloud bookshelf, and optional AI services
+- [tortotech.github.io](https://github.com/TortoTech/tortotech.github.io) — the Torto official website
