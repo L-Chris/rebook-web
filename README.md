@@ -92,5 +92,4 @@ Please report reproducible problems in [Issues](https://github.com/TortoTech/tor
 
 - [rebook](https://github.com/TortoTech/rebook) — cross-platform ebook parsing and reading kernel
 - [Torto](https://github.com/TortoTech/torto) — the native desktop edition for Windows and macOS
-- [rebook-service](https://github.com/TortoTech/rebook-service) — accounts, cloud bookshelf, and optional AI services
 - [tortotech.github.io](https://github.com/TortoTech/tortotech.github.io) — the Torto official website

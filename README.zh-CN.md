@@ -92,5 +92,4 @@ npm run typecheck   # 仅类型检查
 
 - [rebook](https://github.com/TortoTech/rebook)：跨平台电子书解析与阅读内核
 - [Torto](https://github.com/TortoTech/torto)：Windows 与 macOS 原生桌面版
-- [rebook-service](https://github.com/TortoTech/rebook-service)：账号、云端书架与可选 AI 服务
 - [tortotech.github.io](https://github.com/TortoTech/tortotech.github.io)：Torto 官方网站
