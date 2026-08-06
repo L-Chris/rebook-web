@@ -136,6 +136,83 @@ export async function deleteAnnotation(bookKey: string, id: string): Promise<voi
   notifyChanged(bookKey)
 }
 
+// ---------------------------------------------------------------------------
+// WebDAV sync bridge (src/features/sync/adapter.ts)
+//
+// The engine keeps its own annotation records in `rebook-sync-v1`; these
+// helpers let the adapter write merged results back without marking records
+// dirty. The `version` field doubles as the "exported to the sync store"
+// generation: 0 means the engine has never seen this annotation.
+// ---------------------------------------------------------------------------
+
+export interface SyncedAnnotationSnapshot {
+  id: string
+  location: BookPosition
+  quote: string | null
+  note: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** Upsert an annotation merged by the sync engine; dirty local edits win. */
+export async function upsertSyncedAnnotation(bookKey: string, input: SyncedAnnotationSnapshot): Promise<void> {
+  const record = await getStoredRecord(bookKey, input.id)
+  if (record?.dirty) return
+  if (record && !record.deletedAt && record.updatedAt >= input.updatedAt) return
+  await putRecord({
+    storageKey: storageKey(bookKey, input.id),
+    id: input.id,
+    bookKey,
+    serverBookId: record?.serverBookId ?? null,
+    location: input.location,
+    quote: input.quote,
+    note: input.note,
+    color: record?.color ?? normalizeAnnotationColor(null),
+    source: record?.source ?? 'user',
+    data: record?.data ?? null,
+    version: Math.max(1, record?.version ?? 0),
+    dirty: false,
+    syncError: null,
+    deletedAt: null,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+  })
+  notifyChanged(bookKey)
+}
+
+/** Soft-delete a locally clean annotation the engine reports as tombstoned. */
+export async function markAnnotationDeletedBySync(bookKey: string, id: string, deletedAt: string): Promise<void> {
+  const record = await getStoredRecord(bookKey, id)
+  if (!record || record.deletedAt || record.dirty) return
+  record.deletedAt = deletedAt
+  record.updatedAt = deletedAt
+  record.dirty = false
+  record.syncError = null
+  await putRecord(record)
+  notifyChanged(bookKey)
+}
+
+/**
+ * Acknowledge exported annotations after a successful sync: clear the dirty
+ * flag (bumping `version` past 0) and drop tombstones the engine now carries.
+ */
+export async function finalizeSyncedAnnotations(bookKey: string, ids: string[]): Promise<void> {
+  if (!ids.length) return
+  for (const id of ids) {
+    const record = await getStoredRecord(bookKey, id)
+    if (!record) continue
+    if (record.deletedAt) {
+      await removeStoredRecord(record.storageKey)
+    } else {
+      record.dirty = false
+      record.syncError = null
+      record.version = Math.max(1, record.version)
+      await putRecord(record)
+    }
+  }
+  notifyChanged(bookKey)
+}
+
 export async function syncAnnotations(bookKey: string, serverBookId: string): Promise<ReaderAnnotation[]> {
   const cursorKey = `cursor:${bookKey}:${serverBookId}`
   let cursor = await getMeta(cursorKey) ?? '0'

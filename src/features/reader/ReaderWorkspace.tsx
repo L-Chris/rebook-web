@@ -1,6 +1,5 @@
 import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type CSSProperties, type HTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
@@ -19,8 +18,6 @@ import {
   Library,
   ListTree,
   Loader2,
-  LogIn,
-  LogOut,
   Maximize2,
   Menu,
   MessageCircleQuestion,
@@ -37,7 +34,6 @@ import {
   Settings,
   Sun,
   Trash2,
-  UserRound,
   Volume2,
   X,
 } from 'lucide-react'
@@ -51,7 +47,6 @@ import {
   createAIChatExtension,
   createBrowserTTSAudioPlayer,
   createBuiltInRebookExtensionCatalog,
-  createProfessionalTranslationExtension,
   createReader,
   createRebookExtensionCatalog,
   createRebookExtensionManager,
@@ -89,7 +84,6 @@ import {
 import {
   apiFetch,
   apiRequest,
-  apiUrl,
   assetUrl,
   type ShelfItem,
 } from '../../lib/api'
@@ -132,8 +126,6 @@ import {
 } from '../../lib/extension-marketplace'
 import { notifyReaderConfigChanged, READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
 import { useAppTheme, type AppTheme } from '../theme/ThemeContext'
-import { useAuth } from '../auth/AuthContext'
-import { CloudDriveSettings } from '../cloud-drive/CloudDrivePage'
 import {
   iconButtonClass,
   inputClass,
@@ -149,7 +141,6 @@ import {
   type AppLanguage,
   type Translate,
 } from '../i18n/LanguageContext'
-import { usePreferenceSync } from '../preferences/PreferencesSyncContext'
 import {
   createAnnotation as createStoredAnnotation,
   deleteAnnotation as deleteStoredAnnotation,
@@ -158,6 +149,16 @@ import {
   updateAnnotation as updateStoredAnnotation,
   type ReaderAnnotation,
 } from '../../lib/annotations'
+import {
+  SYNC_INTERVAL_OPTIONS,
+  SYNC_PROVIDER_PRESETS,
+  loadSyncSettings,
+  saveSyncSettings,
+  selectSyncProvider,
+  type SyncProviderKind,
+  type SyncSettings,
+} from '../sync/providers'
+import { useSync } from '../sync/SyncContext'
 
 type ReflowablePageFitMode = NonNullable<RendererStyles['reflowablePageFit']>
 type Panel = 'chat' | null
@@ -198,9 +199,6 @@ export interface DemoConfig {
   translationRuntimeEnabled: boolean
   translationProvider: 'browser' | 'ai'
   translateTOC: boolean
-  professionalTranslation: boolean
-  professionalServiceBaseUrl: string
-  professionalBookId: string
   translationAIProvider: string
   translationAIModel: string
   translationTargetLanguage: AppLanguage | 'interface'
@@ -369,13 +367,6 @@ interface ReflowDebugFigurePair {
   issue: ReflowDebugIssueKind | null
 }
 
-type StoryEntityKind = 'character' | 'person' | 'location' | 'organization' | 'event' | 'concept' | 'all'
-
-interface StoryMemoryToolConfig {
-  serviceBaseUrl: string
-  bookId: string
-}
-
 interface ReflowDebugSnapshot {
   pageIndex: number | null
   location: ReturnType<typeof summarizeLocation>
@@ -426,13 +417,9 @@ const ANNOTATION_COLOR = 'rgba(96, 165, 250, 0.28)'
 // the annotated text visually highlighted until save/close.
 const PENDING_ANNOTATION_MARK_ID = 'annotation-pending'
 const READER_SIDEBAR_PINNED_STORAGE_KEY = 'rebook-reader-sidebar-pinned'
-const STORY_MEMORY_ENABLED = import.meta.env.DEV
-const configuredRebookServiceUrl = String(import.meta.env.VITE_REBOOK_SERVICE_URL ?? '').trim()
-const defaultRebookServiceUrl = configuredRebookServiceUrl
-  || (import.meta.env.DEV ? 'http://127.0.0.1:8083' : 'https://read.rethinkos.com/api')
 
 interface ChatCommand {
-  name: '/summary' | '/search' | '/rewrite' | '/extract' | '/story-index' | '/timeline' | '/profile' | '/relations' | '/entities'
+  name: '/summary' | '/search' | '/rewrite' | '/extract'
   description: string
   insertText: string
   requiresArgs?: boolean
@@ -472,43 +459,6 @@ const ZH_CHAT_COMMANDS: ChatCommand[] = [
     insertText: '/extract',
     buildPrompt: () => '请提取当前章节的关键概念。要求：用中文回答；先列出概念清单，再分别解释每个概念的含义、它在本章中的作用，以及概念之间的关系；涉及本章具体内容时添加可点击引用。',
   },
-  {
-    name: '/story-index',
-    description: '索引本书故事记忆',
-    insertText: '/story-index',
-    buildPrompt: args => {
-      const extra = args ? `\n额外索引要求：${args}` : ''
-      return `请调用 indexStoryMemory 为当前后端书籍建立故事记忆索引。默认索引本书前 80 个 chunk；完成后只简要说明索引状态、bookId、indexedChunks。${extra}`
-    },
-  },
-  {
-    name: '/timeline',
-    description: '整理故事事件时间线',
-    insertText: '/timeline ',
-    buildPrompt: args => `请结合 story memory 工具整理本书事件时间线。${args ? `重点关注：${args}。` : ''}要求：先调用 getStoryTimeline；必要时再用 searchBook 或 getContent 补充原文依据；最终回答用中文，并给关键事件添加可点击引用。`,
-  },
-  {
-    name: '/profile',
-    description: '查询人物细节',
-    insertText: '/profile ',
-    requiresArgs: true,
-    missingArgsMessage: '请输入人物名称，例如 `/profile 哈利`。',
-    buildPrompt: args => `请结合 story memory 工具整理“${args}”的人物档案。要求：调用 getCharacterProfile；说明身份、别名、性格/动机、重要行动和出场证据；最终回答用中文，并给关键结论添加可点击引用。`,
-  },
-  {
-    name: '/relations',
-    description: '查询人物关系',
-    insertText: '/relations ',
-    requiresArgs: true,
-    missingArgsMessage: '请输入人物名称，例如 `/relations 哈利`。',
-    buildPrompt: args => `请结合 story memory 工具整理“${args}”的人物关系。要求：调用 getCharacterRelationships；必要时再调用 getCharacterProfile 或 searchStoryMemory；最终回答用中文，并给关系结论添加可点击引用。`,
-  },
-  {
-    name: '/entities',
-    description: '提取人物地点事件',
-    insertText: '/entities ',
-    buildPrompt: args => `请结合 story memory 工具提取本书中的人物、地点、组织和事件。${args ? `筛选要求：${args}。` : ''}要求：调用 getStoryEntities；按类型分组；最终回答用中文，并尽量附可点击引用。`,
-  },
 ]
 
 const EN_CHAT_COMMANDS: ChatCommand[] = [
@@ -541,55 +491,10 @@ const EN_CHAT_COMMANDS: ChatCommand[] = [
     insertText: '/extract',
     buildPrompt: () => 'Extract the key concepts from the current chapter in English. List the concepts, explain their meaning and role in the chapter, describe their relationships, and add clickable citations for chapter-specific claims.',
   },
-  {
-    name: '/story-index',
-    description: 'Index story memory for this book',
-    insertText: '/story-index',
-    buildPrompt: args => {
-      const extra = args ? `\nAdditional indexing requirements: ${args}` : ''
-      return `Call indexStoryMemory to build the story-memory index for the current backend book. Index the first 80 chunks by default, then briefly report the status, bookId, and indexedChunks.${extra}`
-    },
-  },
-  {
-    name: '/timeline',
-    description: 'Build a timeline of story events',
-    insertText: '/timeline ',
-    buildPrompt: args => `Use the story-memory tools to build an event timeline for this book. ${args ? `Focus on: ${args}. ` : ''}Call getStoryTimeline first and use searchBook or getContent for supporting passages when needed. Answer in English and add clickable citations to key events.`,
-  },
-  {
-    name: '/profile',
-    description: 'Look up character details',
-    insertText: '/profile ',
-    requiresArgs: true,
-    missingArgsMessage: 'Enter a character name, for example `/profile Harry`.',
-    buildPrompt: args => `Use the story-memory tools to create a profile for “${args}”. Call getCharacterProfile; explain identity, aliases, personality or motivation, major actions, and supporting appearances. Answer in English with clickable citations for key conclusions.`,
-  },
-  {
-    name: '/relations',
-    description: 'Look up character relationships',
-    insertText: '/relations ',
-    requiresArgs: true,
-    missingArgsMessage: 'Enter a character name, for example `/relations Harry`.',
-    buildPrompt: args => `Use the story-memory tools to explain the relationships around “${args}”. Call getCharacterRelationships and, if needed, getCharacterProfile or searchStoryMemory. Answer in English with clickable citations.`,
-  },
-  {
-    name: '/entities',
-    description: 'Extract characters, places, and events',
-    insertText: '/entities ',
-    buildPrompt: args => `Use the story-memory tools to extract characters, places, organizations, and events from this book. ${args ? `Filter requirements: ${args}. ` : ''}Call getStoryEntities, group the results by type, answer in English, and include clickable citations where possible.`,
-  },
 ]
 
 function getChatCommands(language: AppLanguage): ChatCommand[] {
-  const commands = language === 'en' ? EN_CHAT_COMMANDS : ZH_CHAT_COMMANDS
-  if (STORY_MEMORY_ENABLED) return commands
-  return commands.filter(command => ![
-    '/story-index',
-    '/timeline',
-    '/profile',
-    '/relations',
-    '/entities',
-  ].includes(command.name))
+  return language === 'en' ? EN_CHAT_COMMANDS : ZH_CHAT_COMMANDS
 }
 
 function readSidebarPinnedPreference(): boolean {
@@ -651,9 +556,6 @@ const defaultConfig: DemoConfig = {
   translationRuntimeEnabled: false,
   translationProvider: 'browser',
   translateTOC: false,
-  professionalTranslation: false,
-  professionalServiceBaseUrl: defaultRebookServiceUrl,
-  professionalBookId: '',
   translationAIProvider: 'provider-1',
   translationAIModel: '',
   translationTargetLanguage: 'interface',
@@ -687,45 +589,14 @@ const defaultConfig: DemoConfig = {
   extensionSettings: {},
 }
 
-function readStoryMemoryToolConfig(config: DemoConfig): StoryMemoryToolConfig | null {
-  if (!STORY_MEMORY_ENABLED) return null
-  const serviceBaseUrl = config.professionalServiceBaseUrl.trim()
-  const bookId = config.professionalBookId.trim()
-  if (!serviceBaseUrl || !bookId) return null
-  return { serviceBaseUrl, bookId }
-}
-
-function buildStoryMemorySystemPrompt(config: DemoConfig, language: AppLanguage): string {
-  const storyMemory = readStoryMemoryToolConfig(config)
+function buildChatSystemPrompt(language: AppLanguage): string {
   const languageInstruction = language === 'en'
     ? 'Respond in English unless the user explicitly asks for another language.'
     : '除非用户明确要求其他语言，否则请使用简体中文回答。'
   const annotationInstruction = language === 'en'
     ? '# Highlights and notes\n- Use annotation tools when the user asks to inspect, search, create, edit, or delete highlights and notes. Mutation tools require explicit user confirmation in the reader UI.\n- New annotations can only target the current reader selection; never invent a raw locator.'
     : '# 高亮与批注\n- 用户要求查看、检索、新增、修改或删除高亮/批注时，使用 annotation 工具。修改类工具会在阅读器界面要求用户明确确认。\n- 新批注只能基于当前阅读器选区，不要自行编造原文位置。'
-  if (!storyMemory) return `${languageInstruction}\n${annotationInstruction}`
-  if (language === 'en') {
-    return [
-      languageInstruction,
-      annotationInstruction,
-      '# Story Memory tools',
-      '- AI Chat is connected to rebook-service story memory for cross-chapter retrieval of characters, places, organizations, events, relationships, profiles, and timelines.',
-      '- Prefer getStoryTimeline, getStoryEntities, getCharacterProfile, getCharacterRelationships, or searchStoryMemory for questions about timelines, relationships, character details, backgrounds, places, organizations, events, or causality.',
-      '- If story-memory evidence lacks rebook://j/ citations, call searchBook, getContent, or getCurrentContext to add source passages.',
-      '- Only call indexStoryMemory when the user explicitly asks to index, build, or refresh story memory.',
-      `- Current story-memory bookId: ${storyMemory.bookId}`,
-    ].join('\n')
-  }
-  return [
-    languageInstruction,
-    annotationInstruction,
-    '# Story Memory 工具',
-    '- 当前 AI Chat 已接入 rebook-service story memory，可用于跨章节检索人物、地点、组织、事件、人物关系、人物细节和故事时间线。',
-    '- 当用户询问“时间线”“人物关系”“人物细节”“角色背景”“地点/组织/事件”“前因后果”时，优先调用 story memory 工具：getStoryTimeline、getStoryEntities、getCharacterProfile、getCharacterRelationships 或 searchStoryMemory。',
-    '- 如果 story memory 工具返回的候选证据缺少 rebook://j/ 引用，必须再调用 searchBook、getContent 或 getCurrentContext 补充原文出处。',
-    '- 只有当用户明确要求“索引/建立故事记忆/刷新故事记忆”时，才调用 indexStoryMemory；不要在普通问答中自动索引。',
-    `- 当前 story memory bookId: ${storyMemory.bookId}`,
-  ].join('\n')
+  return `${languageInstruction}\n${annotationInstruction}`
 }
 
 function createAnnotationAgentTools(bridgeRef: { current: AnnotationAgentBridge | null }): ToolSet {
@@ -840,207 +711,6 @@ function compactAnnotationForAgent(annotation: ReaderAnnotation) {
   }
 }
 
-function createStoryMemoryTools(
-  storyMemory: StoryMemoryToolConfig | null,
-  onLog?: (event: unknown) => void,
-): ToolSet {
-  return {
-    indexStoryMemory: tool({
-      description: '为当前后端书籍建立或刷新 story memory 索引。只在用户明确要求索引、刷新或建立故事记忆时调用；普通问答不要调用。',
-      inputSchema: jsonSchema<{ chapterIndex?: number; maxChunks?: number; extraInstructions?: string }>({
-        type: 'object',
-        properties: {
-          chapterIndex: { type: 'number', description: '只索引指定章节；不填则按 maxChunks 从全书开始索引。' },
-          maxChunks: { type: 'number', description: '最多索引多少个 chunk，默认 80。' },
-          extraInstructions: { type: 'string', description: '额外抽取要求。' },
-        },
-        additionalProperties: false,
-      }),
-      execute: async input => compactStoryIndexResponse(await callStoryMemoryTool(storyMemory, '/index', {
-        method: 'POST',
-        body: {
-          chapterIndex: input.chapterIndex,
-          maxChunks: input.maxChunks ?? 80,
-          extraInstructions: input.extraInstructions,
-        },
-      }, onLog)),
-    }),
-    getStoryChapters: tool({
-      description: '获取后端书籍章节结构和每章首段引用，用于把 story memory 结果映射回章节。',
-      inputSchema: jsonSchema({
-        type: 'object',
-        properties: {},
-        additionalProperties: false,
-      }),
-      execute: async () => callStoryMemoryTool(storyMemory, '/chapters', { method: 'GET' }, onLog),
-    }),
-    searchStoryMemory: tool({
-      description: '在当前书籍 story memory 中搜索情节事实、人物、地点、组织、概念和带出处的证据。',
-      inputSchema: jsonSchema<{ query: string; limit?: number }>({
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '检索问题或关键词。' },
-          limit: { type: 'number', description: '最多返回候选数量，默认 12。' },
-        },
-        required: ['query'],
-        additionalProperties: false,
-      }),
-      execute: async input => callStoryMemoryTool(storyMemory, '/search', {
-        method: 'POST',
-        body: input,
-      }, onLog),
-    }),
-    getStoryTimeline: tool({
-      description: '获取当前书籍的故事事件时间线候选，用于回答事件顺序、前因后果、情节发展。',
-      inputSchema: jsonSchema<{ query?: string; limit?: number }>({
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '可选筛选条件，例如人物名、章节名或事件关键词。' },
-          limit: { type: 'number', description: '最多返回事件数量，默认 24。' },
-        },
-        additionalProperties: false,
-      }),
-      execute: async input => callStoryMemoryTool(storyMemory, '/timeline', {
-        method: 'POST',
-        body: input,
-      }, onLog),
-    }),
-    getStoryEntities: tool({
-      description: '检索当前书籍的人物、地点、组织、事件或关键概念。',
-      inputSchema: jsonSchema<{ kind?: StoryEntityKind; query?: string; limit?: number }>({
-        type: 'object',
-        properties: {
-          kind: {
-            type: 'string',
-            enum: ['character', 'person', 'location', 'organization', 'event', 'concept', 'all'],
-            description: '实体类型，不填默认 all。',
-          },
-          query: { type: 'string', description: '可选筛选关键词。' },
-          limit: { type: 'number', description: '最多返回候选数量，默认 12。' },
-        },
-        additionalProperties: false,
-      }),
-      execute: async input => callStoryMemoryTool(storyMemory, '/entities', {
-        method: 'POST',
-        body: input,
-      }, onLog),
-    }),
-    getCharacterProfile: tool({
-      description: '查询人物档案候选，包括身份、别名、性格、动机、目标、重要行动和证据。',
-      inputSchema: jsonSchema<{ name: string; limit?: number }>({
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: '人物名称或别名。' },
-          limit: { type: 'number', description: '最多返回证据数量，默认 16。' },
-        },
-        required: ['name'],
-        additionalProperties: false,
-      }),
-      execute: async input => callStoryMemoryTool(storyMemory, '/characters/profile', {
-        method: 'POST',
-        body: input,
-      }, onLog),
-    }),
-    getCharacterRelationships: tool({
-      description: '查询某个人物周围的人物关系和互动事实。',
-      inputSchema: jsonSchema<{ name: string; limit?: number }>({
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: '人物名称或别名。' },
-          limit: { type: 'number', description: '最多返回关系事实数量，默认 20。' },
-        },
-        required: ['name'],
-        additionalProperties: false,
-      }),
-      execute: async input => callStoryMemoryTool(storyMemory, '/characters/relationships', {
-        method: 'POST',
-        body: input,
-      }, onLog),
-    }),
-  }
-}
-
-async function callStoryMemoryTool(
-  config: StoryMemoryToolConfig | null,
-  path: string,
-  init: { method: 'GET' | 'POST'; body?: unknown },
-  onLog?: (event: unknown) => void,
-) {
-  if (!config) {
-    return {
-      ok: false,
-      error: 'Story memory is not configured. Fill Chat settings: Story service URL and Story book ID, then apply settings/reopen the book.',
-    }
-  }
-  return callStoryMemory(config, path, init, onLog)
-}
-
-async function callStoryMemory(
-  config: StoryMemoryToolConfig,
-  path: string,
-  init: { method: 'GET' | 'POST'; body?: unknown },
-  onLog?: (event: unknown) => void,
-) {
-  const url = storyMemoryUrl(config, path)
-  onLog?.({ url, method: init.method })
-  try {
-    const response = await fetch(url, {
-      method: init.method,
-      headers: init.body ? { 'Content-Type': 'application/json' } : undefined,
-      body: init.body ? JSON.stringify(init.body) : undefined,
-    })
-    const text = await response.text()
-    const data = parseStoryMemoryResponse(text)
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        error: storyMemoryErrorText(data, text),
-      }
-    }
-    return data
-  } catch (error) {
-    return {
-      ok: false,
-      error: formatError(error),
-    }
-  }
-}
-
-function storyMemoryUrl(config: StoryMemoryToolConfig, path: string): string {
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  return createRebookApiUrl(
-    config.serviceBaseUrl,
-    `/books/${encodeURIComponent(config.bookId)}/story-memory${suffix}`,
-  )
-}
-
-function parseStoryMemoryResponse(text: string): unknown {
-  if (!text.trim()) return { ok: true }
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { ok: false, raw: text.slice(0, 1200) }
-  }
-}
-
-function storyMemoryErrorText(data: unknown, fallback: string): string {
-  if (isRecord(data) && typeof data.error === 'string') return data.error
-  return fallback.slice(0, 1200)
-}
-
-function compactStoryIndexResponse(data: unknown) {
-  if (!isRecord(data)) return data
-  return {
-    ok: data.ok,
-    bookId: data.bookId,
-    groupId: data.groupId,
-    indexedChunks: data.indexedChunks,
-    count: data.count,
-    error: data.error,
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -1054,22 +724,17 @@ registerBuiltInParsers(registry)
 
 export type ReaderWorkspaceProps = {
   libraryBookId?: string
-  authenticated?: boolean
-  accountLabel?: string
   onExit?: () => void
-  onLogin?: () => void
-  onLogout?: () => void
 }
 
 function ReaderWorkspace({
   libraryBookId,
-  authenticated = false,
-  accountLabel = '',
   onExit,
-  onLogin,
-  onLogout,
 }: ReaderWorkspaceProps) {
   const { language, t } = useI18n()
+  // Permanently signed out: backend account sync (annotations, book identity)
+  // stays inert until it is rewired to the direct-WebDAV sync engine.
+  const authenticated = false
   const viewerRef = useRef<HTMLDivElement | null>(null)
   const shellRef = useRef<HTMLDivElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
@@ -1136,8 +801,6 @@ function ReaderWorkspace({
   const [chatReferenceOptions, setChatReferenceOptions] = useState<ChatReference[]>([])
   const [chatBusy, setChatBusy] = useState(false)
   const [chatPanelWidth, setChatPanelWidth] = useState(() => clampPanelWidth(config.chatPanelWidth))
-  const [storyUploadBusy, setStoryUploadBusy] = useState(false)
-  const [storyUploadStatus, setStoryUploadStatus] = useState('')
   const [ttsStatus, setTTSStatus] = useState(t('reader.ttsDisabled'))
   const [translationRuntimeState, setTranslationRuntimeState] = useState<TranslationRuntimeState>(
     config.translationRuntimeEnabled ? 'idle' : 'paused',
@@ -1781,49 +1444,29 @@ function ReaderWorkspace({
           void readerRef.current?.refresh?.()
         }
       }
-      if (cfg.professionalTranslation) {
-        if (cfg.professionalServiceBaseUrl.trim() && cfg.professionalBookId.trim()) {
-          plugins.push(createProfessionalTranslationExtension({
-            serviceBaseUrl: getRebookServiceOrigin(cfg.professionalServiceBaseUrl),
-            bookId: cfg.professionalBookId.trim(),
-            targetLanguage: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language),
-            mode: () => configRef.current.translateMode,
-            prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
-            onUpdate,
-            onStatus: status => appendDebug('translation status', status),
-            pipeline: {
-              audience: 'general demo readers',
-              style: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language) === 'en'
-                ? 'Faithful, precise, publication-quality English.'
-                : 'Faithful, precise, publication-quality Simplified Chinese.',
-            },
-          }))
-        }
+      const commonOptions = {
+        targetLanguage: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language),
+        initiallyEnabled: cfg.translationRuntimeEnabled,
+        mode: () => configRef.current.translateMode,
+        translateTOC: () => configRef.current.translateTOC,
+        prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
+        onTOCUpdate: (items: readonly TOCItem[] | undefined) => {
+          translatedTOCRef.current = items ?? null
+          refreshTOC(readerRef.current, readerRef.current?.getLocation?.(), items ?? null)
+        },
+        onUpdate,
+      }
+      if (cfg.translationProvider === 'browser') {
+        plugins.push(createTranslationExtension({
+          ...commonOptions,
+          provider: createBrowserTranslationProvider({
+            onAvailabilityChange: availability => appendDebug('browser translation availability', availability),
+            onDownloadProgress: progress => appendDebug('browser translation download', { progress }),
+          }),
+        }))
       } else {
-        const commonOptions = {
-          targetLanguage: resolveTranslationTargetLanguage(cfg.translationTargetLanguage, language),
-          initiallyEnabled: cfg.translationRuntimeEnabled,
-          mode: () => configRef.current.translateMode,
-          translateTOC: () => configRef.current.translateTOC,
-          prefetchPages: () => Number(configRef.current.prefetchPages) || 0,
-          onTOCUpdate: (items: readonly TOCItem[] | undefined) => {
-            translatedTOCRef.current = items ?? null
-            refreshTOC(readerRef.current, readerRef.current?.getLocation?.(), items ?? null)
-          },
-          onUpdate,
-        }
-        if (cfg.translationProvider === 'browser') {
-          plugins.push(createTranslationExtension({
-            ...commonOptions,
-            provider: createBrowserTranslationProvider({
-              onAvailabilityChange: availability => appendDebug('browser translation availability', availability),
-              onDownloadProgress: progress => appendDebug('browser translation download', { progress }),
-            }),
-          }))
-        } else {
-          const model = createConfiguredModel(cfg, cfg.translationAIProvider, cfg.translationAIModel)
-          if (model) plugins.push(createTranslationExtension({ ...commonOptions, model }))
-        }
+        const model = createConfiguredModel(cfg, cfg.translationAIProvider, cfg.translationAIModel)
+        if (model) plugins.push(createTranslationExtension({ ...commonOptions, model }))
       }
     }
 
@@ -1856,14 +1499,8 @@ function ReaderWorkspace({
       if (model) {
         plugins.push(createAIChatExtension({
           model,
-          system: () => buildStoryMemorySystemPrompt(configRef.current, language),
+          system: () => buildChatSystemPrompt(language),
           extraTools: () => ({
-            ...(STORY_MEMORY_ENABLED
-              ? createStoryMemoryTools(
-                  readStoryMemoryToolConfig(configRef.current),
-                  event => appendDebug('story memory tool', event),
-                )
-              : {}),
             ...(annotationAgentToolsRef.current ?? {}),
           }),
           maxContentChars: () => Number(configRef.current.chatMaxContentChars) || Number(defaultConfig.chatMaxContentChars),
@@ -2210,14 +1847,7 @@ function ReaderWorkspace({
         if (cancelled) return
         setLibraryItem(item)
 
-        const nextConfig = {
-          ...configRef.current,
-          professionalBookId: item.id,
-        }
-        configRef.current = nextConfig
-        setConfig(nextConfig)
-        setDraftConfig(nextConfig)
-        await resetReader(nextConfig, null)
+        await resetReader(configRef.current, null)
         const opened = await openFileWithReader(file, readerRef.current)
         if (!opened || cancelled) return
         const unitIndex = item.locator?.unitIndex
@@ -2357,61 +1987,6 @@ function ReaderWorkspace({
     if (configRef.current.selectionGranularity === granularity) return
     const next = applyMenuConfig({ selectionGranularity: granularity })
     readerRef.current?.setSelectionGranularity?.(next.selectionGranularity)
-  }
-
-  const uploadCurrentBookForStoryMemory = async (uploadConfig: DemoConfig) => {
-    if (!STORY_MEMORY_ENABLED) {
-      throw new Error('Story Memory is only available in development builds.')
-    }
-    const file = currentFileRef.current
-    if (!file) {
-      const message = t('reader.storyOpenBookFirst')
-      setStoryUploadStatus(message)
-      throw new Error(message)
-    }
-    const serviceBaseUrl = uploadConfig.professionalServiceBaseUrl.trim()
-    if (!serviceBaseUrl) {
-      const message = t('reader.storyServiceRequired')
-      setStoryUploadStatus(message)
-      throw new Error(message)
-    }
-
-    setStoryUploadBusy(true)
-    setStoryUploadStatus(t('reader.storyUploading', { name: file.name }))
-    try {
-      const form = new FormData()
-      form.append('file', file, file.name)
-      if (bookTitle && bookTitle !== 'rebook') form.append('title', bookTitle)
-      const uploadUrl = createRebookApiUrl(serviceBaseUrl, '/books/upload')
-      const response = uploadUrl === apiUrl('/books/upload')
-        ? await apiFetch('/books/upload', { method: 'POST', body: form })
-        : await fetch(uploadUrl, {
-            method: 'POST',
-            body: form,
-            credentials: 'include',
-          })
-      const text = await response.text()
-      const data = parseStoryMemoryResponse(text)
-      if (!response.ok) {
-        throw new Error(storyMemoryErrorText(data, text) || `HTTP ${response.status}`)
-      }
-      if (!isRecord(data) || typeof data.id !== 'string') {
-        throw new Error(t('reader.storyMissingBookId'))
-      }
-      setStoryUploadStatus(t('reader.storyUploaded', { id: data.id }))
-      appendDebug('story memory upload', { bookId: data.id, title: data.title })
-      return {
-        bookId: data.id,
-        title: typeof data.title === 'string' ? data.title : undefined,
-      }
-    } catch (error) {
-      const message = t('reader.storyUploadFailed', { error: formatError(error) })
-      setStoryUploadStatus(message)
-      appendDebug('story memory upload failed', message)
-      throw error
-    } finally {
-      setStoryUploadBusy(false)
-    }
   }
 
   const runSearch = async (rawQuery = searchQuery) => {
@@ -2809,18 +2384,14 @@ function ReaderWorkspace({
             chapterTitle={typeof location?.tocItem?.label === 'string' ? location.tocItem.label : ''}
             sidebarOpen={sidebarOpen}
             activePanel={activePanel}
-            translationAvailable={config.translate && !config.professionalTranslation}
+            translationAvailable={config.translate}
             translationActive={translationRuntimeState === 'running' || translationRuntimeState === 'preparing'}
             translationError={translationRuntimeError}
             chatEnabled={config.chat}
-            authenticated={authenticated}
-            accountLabel={accountLabel}
             pageMode={config.layout === 'scrolled' ? 'scrolled' : config.spread === '1' ? 'single' : 'double'}
             theme={appTheme}
             selectionGranularity={config.selectionGranularity}
             onExit={onExit}
-            onLogin={onLogin}
-            onLogout={onLogout}
             onToggleSidebar={() => setSidebarOpen(value => !value)}
             onToggleTranslation={() => void toggleTranslationRuntime()}
             onOpenSettings={() => {
@@ -2912,10 +2483,6 @@ function ReaderWorkspace({
           setSection={setSettingsSection}
           config={draftConfig}
           setConfig={setDraftConfig}
-          currentBookFileName={currentFileRef.current?.name}
-          storyUploadBusy={STORY_MEMORY_ENABLED ? storyUploadBusy : undefined}
-          storyUploadStatus={STORY_MEMORY_ENABLED ? storyUploadStatus : undefined}
-          onUploadCurrentBook={STORY_MEMORY_ENABLED ? uploadCurrentBookForStoryMemory : undefined}
           extensionSettings={extensionSettings}
           extensionCommands={extensionCommands}
           extensionPanels={extensionPanels}
@@ -3243,14 +2810,10 @@ function Header(props: {
   translationActive: boolean
   translationError: string
   chatEnabled: boolean
-  authenticated: boolean
-  accountLabel: string
   pageMode: 'single' | 'double' | 'scrolled'
   theme: AppTheme
   selectionGranularity: SelectionGranularity
   onExit?: () => void
-  onLogin?: () => void
-  onLogout?: () => void
   onToggleSidebar(): void
   onToggleTranslation(): void
   onOpenSettings(): void
@@ -3410,12 +2973,6 @@ function Header(props: {
           </button>
           {menuOpen ? (
             <div className="absolute right-0 top-11 z-80 w-60 rounded-lg border border-line bg-surface-raised p-1.5 text-left shadow-menu animate-pop motion-reduce:animate-none">
-              {props.authenticated ? (
-                <div className="mb-1 flex items-center gap-2.5 border-b border-line px-3 py-2.5">
-                  <UserRound size={17} className="shrink-0 text-muted" />
-                  <span className="truncate text-ui-sm text-muted-strong">{props.accountLabel}</span>
-                </div>
-              ) : null}
               <ReaderMenuAction
                 icon={<Settings size={17} />}
                 label={t('common.settings')}
@@ -3451,27 +3008,6 @@ function Header(props: {
                   onClick={() => props.onSelectGranularity(option.value)}
                 />
               ))}
-              {menuDivider}
-              {!props.authenticated && props.onLogin ? (
-                <ReaderMenuAction
-                  icon={<LogIn size={17} />}
-                  label={t('common.signIn')}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    props.onLogin?.()
-                  }}
-                />
-              ) : null}
-              {props.authenticated && props.onLogout ? (
-                <ReaderMenuAction
-                  icon={<LogOut size={17} />}
-                  label={t('common.signOut')}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    props.onLogout?.()
-                  }}
-                />
-              ) : null}
             </div>
           ) : null}
         </div>
@@ -5109,10 +4645,6 @@ export function ReaderSettingsDialog(props: {
   setSection(section: SettingsSection): void
   config: DemoConfig
   setConfig(config: DemoConfig): void
-  currentBookFileName?: string
-  storyUploadBusy?: boolean
-  storyUploadStatus?: string
-  onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
   extensionSettings?: readonly RebookExtensionSettingInspection[]
   extensionCommands?: readonly DemoExtensionCommand[]
   extensionPanels?: readonly DemoExtensionPanel[]
@@ -5121,7 +4653,6 @@ export function ReaderSettingsDialog(props: {
   onApply(): void
 }) {
   const { t } = useI18n()
-  const { status: preferenceSyncStatus } = usePreferenceSync()
   const sections: Array<{ id: SettingsSection; label: string }> = [
     { id: 'general', label: t('settings.general') },
     { id: 'font', label: t('settings.font') },
@@ -5132,9 +4663,6 @@ export function ReaderSettingsDialog(props: {
   if (props.config.tts) sections.push({ id: 'tts', label: t('settings.tts') })
   sections.push({ id: 'ai-providers', label: t('settings.aiProviders') })
   if (props.config.chat) sections.push({ id: 'chat', label: t('settings.chat') })
-  if (props.extensionSettings?.length || props.extensionCommands?.length || props.extensionPanels?.length) {
-    sections.push({ id: 'extensions', label: t('settings.extensions') })
-  }
   sections.push({ id: 'debug', label: t('settings.debug') })
   return (
     <div className="fixed inset-0 z-90 grid place-items-center bg-overlay p-4">
@@ -5171,28 +4699,15 @@ export function ReaderSettingsDialog(props: {
               section={props.section}
               config={props.config}
               setConfig={props.setConfig}
-              currentBookFileName={props.currentBookFileName}
-              storyUploadBusy={props.storyUploadBusy ?? false}
-              storyUploadStatus={props.storyUploadStatus ?? ''}
-              onUploadCurrentBook={props.onUploadCurrentBook}
               extensionSettings={props.extensionSettings ?? []}
               extensionCommands={props.extensionCommands ?? []}
               extensionPanels={props.extensionPanels ?? []}
               onExecuteExtensionCommand={props.onExecuteExtensionCommand}
             />
           </div>
-          <div className="flex items-center gap-3 border-t border-line p-4">
-            <span className="mr-auto text-ui-sm text-muted">
-              {t(`settings.syncStatus.${preferenceSyncStatus}`)}
-            </span>
-            {props.section === 'cloud' ? (
-              <button className={primaryButtonClass} type="button" onClick={props.onClose}>{t('common.close')}</button>
-            ) : (
-              <>
-                <button className={toolbarButtonClass} type="button" onClick={props.onClose}>{t('common.cancel')}</button>
-                <button className={primaryButtonClass} type="button" onClick={props.onApply}>{t('common.apply')}</button>
-              </>
-            )}
+          <div className="flex items-center justify-end gap-3 border-t border-line p-4">
+            <button className={toolbarButtonClass} type="button" onClick={props.onClose}>{t('common.cancel')}</button>
+            <button className={primaryButtonClass} type="button" onClick={props.onApply}>{t('common.apply')}</button>
           </div>
         </section>
       </div>
@@ -5204,10 +4719,6 @@ function SettingsSectionForm({
   section,
   config,
   setConfig,
-  currentBookFileName,
-  storyUploadBusy,
-  storyUploadStatus,
-  onUploadCurrentBook,
   extensionSettings,
   extensionCommands,
   extensionPanels,
@@ -5216,10 +4727,6 @@ function SettingsSectionForm({
   section: SettingsSection
   config: DemoConfig
   setConfig(config: DemoConfig): void
-  currentBookFileName?: string
-  storyUploadBusy: boolean
-  storyUploadStatus: string
-  onUploadCurrentBook?(config: DemoConfig): Promise<{ bookId: string; title?: string }>
   extensionSettings: readonly RebookExtensionSettingInspection[]
   extensionCommands: readonly DemoExtensionCommand[]
   extensionPanels: readonly DemoExtensionPanel[]
@@ -5227,8 +4734,6 @@ function SettingsSectionForm({
 }) {
   const { language, setLanguage, t } = useI18n()
   const { theme, setTheme } = useAppTheme()
-  const auth = useAuth()
-  const navigate = useNavigate()
   const update = <K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) => setConfig({ ...config, [key]: value })
   if (section === 'general') {
     return (
@@ -5249,21 +4754,6 @@ function SettingsSectionForm({
             onChange={value => {
               const nextLanguage = normalizeAppLanguage(value)
               setLanguage(nextLanguage)
-            }}
-          />
-        </SettingsGroup>
-        <SettingsGroup title={t('settings.account')}>
-          <SettingsActionRow
-            label={auth.user?.displayName || auth.user?.email || t('settings.notSignedIn')}
-            description={auth.user?.email || t('settings.accountDescription')}
-            actionLabel={t(auth.user ? 'common.signOut' : 'common.signIn')}
-            disabled={auth.loading}
-            onAction={() => {
-              if (auth.user) {
-                void auth.logout()
-                return
-              }
-              navigate('/login', { state: { from: window.location.pathname } })
             }}
           />
         </SettingsGroup>
@@ -5288,7 +4778,7 @@ function SettingsSectionForm({
     )
   }
   if (section === 'cloud') {
-    return <CloudDriveSettings />
+    return <CloudSyncSettingsForm />
   }
   if (section === 'ai-providers') {
     return <AIProvidersSettingsForm config={config} setConfig={setConfig} />
@@ -5297,45 +4787,34 @@ function SettingsSectionForm({
     return (
       <SettingsForm>
         <SettingsGroup title={t('settings.translationService')}>
-          {config.professionalTranslation ? (
-            <>
-              <SettingsTextRow label={t('settings.serviceUrl')} value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
-              <SettingsTextRow label={t('settings.bookId')} value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
-            </>
+          <SettingsSelectRow
+            label={t('settings.translationProvider')}
+            value={config.translationProvider}
+            onChange={value => update('translationProvider', value as DemoConfig['translationProvider'])}
+            options={[
+              ['browser', t('settings.browserTranslation')],
+              ['ai', t('settings.aiTranslation')],
+            ]}
+          />
+          {config.translationProvider === 'ai' ? (
+            <ConfiguredModelSelectRow
+              label={t('settings.translationModel')}
+              config={config}
+              providerId={config.translationAIProvider}
+              model={config.translationAIModel}
+              onChange={(provider, value) => setConfig({ ...config, translationAIProvider: provider, translationAIModel: value })}
+            />
           ) : (
-            <>
-              <SettingsSelectRow
-                label={t('settings.translationProvider')}
-                value={config.translationProvider}
-                onChange={value => update('translationProvider', value as DemoConfig['translationProvider'])}
-                options={[
-                  ['browser', t('settings.browserTranslation')],
-                  ['ai', t('settings.aiTranslation')],
-                ]}
-              />
-              {config.translationProvider === 'ai' ? (
-                <ConfiguredModelSelectRow
-                  label={t('settings.translationModel')}
-                  config={config}
-                  providerId={config.translationAIProvider}
-                  model={config.translationAIModel}
-                  onChange={(provider, value) => setConfig({ ...config, translationAIProvider: provider, translationAIModel: value })}
-                />
-              ) : (
-                <div className="px-4 py-3 text-ui-sm leading-relaxed text-muted sm:px-5">
-                  {t('settings.browserTranslationDescription')}
-                </div>
-              )}
-            </>
+            <div className="px-4 py-3 text-ui-sm leading-relaxed text-muted sm:px-5">
+              {t('settings.browserTranslationDescription')}
+            </div>
           )}
         </SettingsGroup>
         <SettingsGroup title={t('settings.translationBehavior')}>
           <SettingsSelectRow label={t('settings.translateTo')} value={resolveTranslationTargetLanguage(config.translationTargetLanguage, language)} onChange={value => update('translationTargetLanguage', normalizeAppLanguage(value))} options={[['zh-CN', t('common.simplifiedChinese')], ['en', t('common.english')]]} />
           <SettingsSelectRow label={t('settings.displayMode')} value={config.translateMode} onChange={value => update('translateMode', value as DemoConfig['translateMode'])} options={[['bilingual', t('settings.bilingual')], ['replace', t('settings.replaceOriginal')]]} />
           <SettingsTextRow label={t('settings.prefetchPages')} value={config.prefetchPages} type="number" onChange={value => update('prefetchPages', value)} />
-          {!config.professionalTranslation ? (
-            <SettingsToggleRow label={t('settings.translateToc')} description={t('settings.translateTocDescription')} checked={config.translateTOC} onChange={value => update('translateTOC', value)} />
-          ) : null}
+          <SettingsToggleRow label={t('settings.translateToc')} description={t('settings.translateTocDescription')} checked={config.translateTOC} onChange={value => update('translateTOC', value)} />
         </SettingsGroup>
       </SettingsForm>
     )
@@ -5377,30 +4856,6 @@ function SettingsSectionForm({
           />
           <SettingsTextRow label={t('settings.maxContextChars')} value={config.chatMaxContentChars} type="number" onChange={value => update('chatMaxContentChars', value)} />
         </SettingsGroup>
-        {STORY_MEMORY_ENABLED ? (
-          <>
-            <SettingsGroup title={t('settings.storyMemory')}>
-              <SettingsTextRow label={t('settings.serviceUrl')} value={config.professionalServiceBaseUrl} onChange={value => update('professionalServiceBaseUrl', value)} />
-              <SettingsTextRow label={t('settings.bookId')} value={config.professionalBookId} onChange={value => update('professionalBookId', value)} />
-              <SettingsActionRow
-                label={t('settings.currentBook')}
-                description={currentBookFileName || t('settings.openBookToUpload')}
-                actionLabel={storyUploadBusy ? t('settings.uploading') : t('settings.upload')}
-                status={storyUploadStatus}
-                disabled={storyUploadBusy || !currentBookFileName || !onUploadCurrentBook}
-                onAction={() => {
-                  if (!onUploadCurrentBook) return
-                  void onUploadCurrentBook(config)
-                    .then(result => setConfig({ ...config, professionalBookId: result.bookId }))
-                    .catch(() => undefined)
-                }}
-              />
-            </SettingsGroup>
-            <p className="m-0 px-1 text-ui-sm text-muted">
-              {t('settings.storyMemoryNote')}
-            </p>
-          </>
-        ) : null}
       </SettingsForm>
     )
   }
@@ -5420,6 +4875,77 @@ function SettingsSectionForm({
     <SettingsForm>
       <SettingsGroup title={t('settings.developerOptions')}>
         <SettingsToggleRow label={t('settings.debugLogs')} description={t('settings.debugLogsDescription')} checked={config.debug} onChange={value => update('debug', value)} />
+      </SettingsGroup>
+    </SettingsForm>
+  )
+}
+
+function CloudSyncSettingsForm() {
+  const { t } = useI18n()
+  const sync = useSync()
+  const [draft, setDraft] = useState<SyncSettings>(() => loadSyncSettings())
+  const apply = (next: SyncSettings) => {
+    setDraft(next)
+    saveSyncSettings(next)
+    notifyReaderConfigChanged()
+  }
+  const update = <K extends keyof SyncSettings>(key: K, value: SyncSettings[K]) => apply({ ...draft, [key]: value })
+  const preset = SYNC_PROVIDER_PRESETS.find(item => item.kind === draft.provider)
+  const statusText = sync.status === 'syncing'
+    ? t('sync.syncing')
+    : sync.lastError
+      ? t('sync.lastSyncError', { error: sync.lastError })
+      : sync.lastSyncAt
+        ? t('sync.lastSyncAt', { time: new Date(sync.lastSyncAt).toLocaleString() })
+        : t('sync.neverSynced')
+  return (
+    <SettingsForm>
+      <SettingsGroup title={t('settings.cloud')}>
+        <SettingsToggleRow
+          label={t('sync.enable')}
+          description={t('sync.enableDescription')}
+          checked={draft.enabled}
+          onChange={value => update('enabled', value)}
+        />
+        <SettingsSelectRow
+          label={t('sync.provider')}
+          value={draft.provider}
+          options={SYNC_PROVIDER_PRESETS.map(item => [item.kind, item.label] as [string, string])}
+          onChange={value => apply(selectSyncProvider(draft, value as SyncProviderKind))}
+        />
+        <SettingsTextRow label={t('sync.username')} value={draft.username} onChange={value => update('username', value)} />
+        <SettingsTextRow label={t('sync.password')} value={draft.password} type="password" onChange={value => update('password', value)} />
+        <SettingsTextRow label={t('sync.deviceName')} value={draft.deviceName} onChange={value => update('deviceName', value)} />
+        <SettingsSelectRow
+          label={t('sync.interval')}
+          value={String(draft.intervalMinutes)}
+          options={SYNC_INTERVAL_OPTIONS.map(minutes => [String(minutes), t('sync.intervalMinutes', { count: minutes })] as [string, string])}
+          onChange={value => update('intervalMinutes', Number(value))}
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t('sync.advanced')}>
+        <SettingsTextRow label={t('sync.baseUrl')} value={draft.baseUrl} onChange={value => update('baseUrl', value)} placeholder={preset?.baseUrl ?? ''} />
+        <SettingsTextRow label={t('sync.proxyPrefix')} value={draft.proxyPrefix} onChange={value => update('proxyPrefix', value)} placeholder={preset?.proxyPrefix ?? ''} />
+        <div className="px-4 py-3 text-ui-sm leading-relaxed text-muted sm:px-5">
+          {t('sync.proxyHint')}{' '}
+          <a
+            className="text-accent-text underline"
+            href="https://github.com/TortoTech/torto-web/tree/main/worker"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t('sync.proxyHintLink')}
+          </a>
+        </div>
+      </SettingsGroup>
+      <SettingsGroup title={t('sync.syncNow')}>
+        <SettingsActionRow
+          label={t('sync.syncNow')}
+          status={statusText}
+          actionLabel={t('sync.syncNow')}
+          disabled={sync.status === 'syncing'}
+          onAction={() => void sync.syncNow()}
+        />
       </SettingsGroup>
     </SettingsForm>
   )
@@ -6353,7 +5879,6 @@ function normalizeConfig(value: Partial<DemoConfig> = {}): DemoConfig {
     config = {
       ...config,
       translate: true,
-      professionalTranslation: false,
       extensionDefaultsVersion: BUILT_IN_EXTENSION_DEFAULTS_VERSION,
     }
   } else if (storedExtensionDefaultsVersion < BUILT_IN_EXTENSION_DEFAULTS_VERSION) {
@@ -6465,9 +5990,11 @@ function isDemoExtensionFeatureControlled(manifest: RebookExtensionManifest): bo
 function isDemoExtensionFeatureEnabled(manifest: RebookExtensionManifest, config: DemoConfig): boolean {
   switch (manifest.id) {
     case TRANSLATION_EXTENSION_ID:
-      return config.translate && !config.professionalTranslation
+      return config.translate
     case PROFESSIONAL_TRANSLATION_EXTENSION_ID:
-      return config.translate && config.professionalTranslation
+      // The backend professional translation workflow is removed; keep the
+      // built-in kernel extension installed but permanently disabled.
+      return false
     case TTS_EXTENSION_ID:
       return config.tts
     case AI_CHAT_EXTENSION_ID:
@@ -6540,18 +6067,6 @@ function createDemoConfigWithExtensionManager(config: DemoConfig, manager: Retur
 
 function extensionInstallationsToRecord(installations: readonly RebookExtensionInstallation[]): DemoExtensionInstallations {
   return Object.fromEntries(installations.map(installation => [installation.id, installation]))
-}
-
-
-function createRebookApiUrl(serviceBaseUrl: string, path: string): string {
-  const base = serviceBaseUrl.trim().replace(/\/+$/, '')
-  const apiBase = /\/api$/i.test(base) ? base : `${base}/api`
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  return `${apiBase}${suffix}`
-}
-
-function getRebookServiceOrigin(serviceBaseUrl: string): string {
-  return serviceBaseUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')
 }
 
 function getChatCommandToken(input: string): string | null {

@@ -1,0 +1,8 @@
+{
+  "deploy": {
+    "org": "torto",
+    "app": "webdav-proxy"
+  }
+}
+
+

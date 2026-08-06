@@ -1,0 +1,6 @@
+name = "torto-webdav-proxy"
+main = "src/index.js"
+compatibility_date = "2026-08-06"
+
+# 免费版限制：10 万次请求/天；请求体最大 100MB（超过 100MB 的书籍无法上传，需提示用户）
+# 纯流式转发，无 CPU/内存压力

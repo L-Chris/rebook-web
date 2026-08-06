@@ -8,13 +8,9 @@ import {
 import { useNavigate } from 'react-router-dom'
 import {
   BookOpen,
-  Blocks,
   Cloud,
-  CloudUpload,
   HardDrive,
   Loader2,
-  LogIn,
-  LogOut,
   Menu,
   Moon,
   Plus,
@@ -22,21 +18,15 @@ import {
   Settings,
   Sun,
   Trash2,
-  UserRound,
 } from 'lucide-react'
-import { useAuth } from '../auth/AuthContext'
-import { useCloudSync } from '../cloud-sync/CloudSyncContext'
 import { useI18n } from '../i18n/LanguageContext'
 import { useAppTheme } from '../theme/ThemeContext'
 import {
-  apiRequest,
   assetUrl,
   type ShelfItem,
-  type ShelfList,
 } from '../../lib/api'
 import {
   importLocalBook,
-  getSyncedServerBookIds,
   isLocalBookId,
   listLocalBooks,
   removeLocalBook,
@@ -44,6 +34,7 @@ import {
 import { ensureReaderFontsLoaded } from '../../lib/reader-fonts'
 import { iconButtonClass, menuRowClass } from '../../lib/ui-classes'
 import { READER_CONFIG_CHANGED_EVENT } from '../../lib/preference-events'
+import { useSync } from '../sync/SyncContext'
 import {
   ReaderSettingsDialog,
   loadReaderConfig,
@@ -55,10 +46,9 @@ import {
 const SUPPORTED_BOOKS = '.epub,.pdf,.mobi,.azw,.azw3,.fb2,.fbz,.cbz'
 
 export function ShelfPage() {
-  const auth = useAuth()
-  const cloudSync = useCloudSync()
   const { t } = useI18n()
   const { theme, toggleTheme } = useAppTheme()
+  const sync = useSync()
   const navigate = useNavigate()
   const fileInput = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -72,35 +62,19 @@ export function ShelfPage() {
   const [settingsConfig, setSettingsConfig] = useState<DemoConfig>(() => loadReaderConfig())
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [cloudPromptDismissed, setCloudPromptDismissed] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
       const localItems = await listLocalBooks(query)
-      const syncedServerBookIds = await getSyncedServerBookIds()
-      let cloudItems: ShelfItem[] = []
-      if (auth.user) {
-        try {
-          const params = new URLSearchParams({ page: '1', pageSize: '100' })
-          if (query.trim()) params.set('query', query.trim())
-          const cloud = await apiRequest<ShelfList>(`/shelf/items?${params}`)
-          cloudItems = cloud.items
-        } catch (reason) {
-          setError(reason instanceof Error ? reason.message : t('shelf.cloudLoadFailed'))
-        }
-      }
-      setItems([
-        ...localItems,
-        ...cloudItems.filter(item => !syncedServerBookIds.has(item.id)),
-      ])
+      setItems(localItems)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('shelf.localLoadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [auth.user, query, t])
+  }, [query, t])
 
   useEffect(() => {
     void load()
@@ -115,16 +89,6 @@ export function ShelfPage() {
       window.removeEventListener('rebook:cloud-sync-completed', reload)
     }
   }, [load])
-
-  useEffect(() => {
-    if (!auth.user) {
-      setCloudPromptDismissed(false)
-      return
-    }
-    setCloudPromptDismissed(
-      localStorage.getItem(cloudPromptKey(auth.user.id)) === 'dismissed',
-    )
-  }, [auth.user])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -169,13 +133,6 @@ export function ShelfPage() {
     setSettingsOpen(true)
   }
 
-  const openCloudSettings = () => {
-    setMenuOpen(false)
-    setSettingsConfig(loadReaderConfig())
-    setSettingsSection('cloud')
-    setSettingsOpen(true)
-  }
-
   const closeSettings = () => {
     setSettingsOpen(false)
   }
@@ -195,14 +152,8 @@ export function ShelfPage() {
     try {
       for (const file of files) await importLocalBook(file)
       await load()
-      if (auth.user && !cloudSync.accounts.length) {
-        localStorage.removeItem(cloudPromptKey(auth.user.id))
-        setCloudPromptDismissed(false)
-      }
-      setNotice(t(
-        cloudSync.accounts.length ? 'shelf.importedSyncing' : 'shelf.imported',
-        { count: files.length },
-      ))
+      setNotice(t('shelf.imported', { count: files.length }))
+      void sync.syncNow()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t('shelf.importFailed'))
       setNotice('')
@@ -215,18 +166,8 @@ export function ShelfPage() {
     if (!window.confirm(t('shelf.removeConfirm', { title: item.title }))) return
     try {
       if (isLocalBookId(item.id)) {
-        if (item.serverBookId) {
-          await apiRequest(`/shelf/items/${item.serverBookId}`, {
-            method: 'DELETE',
-            json: {},
-          })
-        }
+        void sync.markLocalBookRemoved(item.id)
         await removeLocalBook(item.id)
-      } else {
-        await apiRequest(`/shelf/items/${item.id}`, {
-          method: 'DELETE',
-          json: {},
-        })
       }
       await load()
     } catch (reason) {
@@ -258,6 +199,35 @@ export function ShelfPage() {
           </label>
 
           <span className="hidden h-6 w-px bg-line-strong sm:block" />
+          {sync.settings.enabled ? (
+            <span
+              className={`hidden items-center gap-1.5 text-ui-sm md:inline-flex ${sync.lastError && sync.status !== 'syncing' ? 'text-danger' : 'text-muted'}`}
+              title={
+                sync.status === 'syncing'
+                  ? t('sync.syncing')
+                  : sync.lastError
+                    ? t('sync.lastSyncError', { error: sync.lastError })
+                    : sync.lastSyncAt
+                      ? t('sync.lastSyncAt', { time: new Date(sync.lastSyncAt).toLocaleString() })
+                      : t('sync.neverSynced')
+              }
+            >
+              {sync.status === 'syncing' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Cloud className="h-3.5 w-3.5" />
+              )}
+              <span className="max-w-48 truncate">
+                {sync.status === 'syncing'
+                  ? t('sync.syncing')
+                  : sync.lastError
+                    ? t('sync.lastSyncError', { error: sync.lastError })
+                    : sync.lastSyncAt
+                      ? t('sync.lastSyncAt', { time: new Date(sync.lastSyncAt).toLocaleString() })
+                      : t('sync.neverSynced')}
+              </span>
+            </span>
+          ) : null}
           <button
             className={iconButtonClass}
             type="button"
@@ -281,30 +251,6 @@ export function ShelfPage() {
             </button>
             {menuOpen ? (
               <div className="absolute right-0 top-12 w-60 rounded-xl border border-line bg-surface-raised p-1.5 shadow-menu animate-pop motion-reduce:animate-none">
-                {auth.user ? (
-                  <div className="mb-1 flex items-center gap-2.5 border-b border-line px-3 py-2.5">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-muted text-muted">
-                      <UserRound className="h-4 w-4" />
-                    </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-ui-md font-medium text-ink">
-                        {auth.user.displayName || auth.user.email}
-                      </div>
-                      <div className="mt-0.5 text-ui-sm text-muted">
-                        {cloudSync.accounts.length
-                          ? t('shelf.cloudConnected')
-                          : t('shelf.accountSignedIn')}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <MenuAction
-                    icon={<LogIn className="h-4 w-4" />}
-                    label={t('common.signIn')}
-                    onClick={() => navigate('/login', { state: { from: '/' } })}
-                  />
-                )}
-                <div className="mx-1 my-1 border-t border-line" />
                 <MenuAction
                   icon={theme === 'light' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                   label={theme === 'light' ? t('common.lightMode') : t('common.darkMode')}
@@ -312,22 +258,10 @@ export function ShelfPage() {
                 />
                 <div className="mx-1 my-1 border-t border-line" />
                 <MenuAction
-                  icon={<Blocks className="h-4 w-4" />}
-                  label={t('shelf.extensionStore')}
-                  onClick={() => navigate('/extensions')}
-                />
-                <MenuAction
                   icon={<Settings className="h-4 w-4" />}
                   label={t('common.settings')}
                   onClick={openSettings}
                 />
-                {auth.user ? (
-                  <MenuAction
-                    icon={<LogOut className="h-4 w-4" />}
-                    label={t('common.signOut')}
-                    onClick={() => void auth.logout().then(() => setMenuOpen(false))}
-                  />
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -335,20 +269,6 @@ export function ShelfPage() {
       </header>
 
       <div className="px-3 pb-10 pt-5 md:px-5 md:pt-7">
-        {auth.user
-          && !cloudSync.loading
-          && !cloudSync.error
-          && !cloudSync.accounts.length
-          && !cloudPromptDismissed ? (
-            <CloudDrivePrompt
-              localOnlyCount={cloudSync.localOnlyCount}
-              onConfigure={openCloudSettings}
-              onDismiss={() => {
-                localStorage.setItem(cloudPromptKey(auth.user!.id), 'dismissed')
-                setCloudPromptDismissed(true)
-              }}
-            />
-          ) : null}
         {notice ? (
           <div className="mb-5 rounded-xl border border-success-line bg-success-soft px-4 py-3 text-ui-md text-success">
             {notice}
@@ -498,43 +418,6 @@ function BookCard({
   )
 }
 
-function CloudDrivePrompt({
-  localOnlyCount,
-  onConfigure,
-  onDismiss,
-}: {
-  localOnlyCount: number
-  onConfigure(): void
-  onDismiss(): void
-}) {
-  const { t } = useI18n()
-  return (
-    <section className="mb-5 flex flex-col gap-4 rounded-xl border border-accent/25 bg-accent-soft px-4 py-4 text-accent-text sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex min-w-0 items-start gap-3">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface text-accent-text shadow-sm">
-          <CloudUpload className="h-4.5 w-4.5" />
-        </span>
-        <div>
-          <h2 className="text-ui-md font-semibold">{t('shelf.configureCloudTitle')}</h2>
-          <p className="mt-1 text-ui-sm leading-relaxed text-muted">
-            {localOnlyCount
-              ? t('shelf.configureCloudLocalBooks', { count: localOnlyCount })
-              : t('shelf.configureCloudDescription')}
-          </p>
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2 pl-12 sm:pl-0">
-        <button className="rounded-lg px-3 py-2 text-ui-sm text-muted hover:bg-surface" type="button" onClick={onDismiss}>
-          {t('shelf.configureCloudLater')}
-        </button>
-        <button className="rounded-lg bg-accent px-3 py-2 text-ui-sm font-medium text-accent-contrast hover:opacity-90" type="button" onClick={onConfigure}>
-          {t('shelf.configureCloudAction')}
-        </button>
-      </div>
-    </section>
-  )
-}
-
 function MenuAction({
   icon,
   label,
@@ -568,8 +451,4 @@ function coverBackground(id: string) {
   const index = Array.from(id).reduce((sum, value) => sum + value.charCodeAt(0), 0) % palettes.length
   const [start, end] = palettes[index]
   return `linear-gradient(145deg, ${start}, ${end})`
-}
-
-function cloudPromptKey(userId: string) {
-  return `rebook-cloud-drive-prompt:${userId}:v1`
 }

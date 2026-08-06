@@ -162,6 +162,89 @@ export async function updateLocalBookAnnotationIdentity(id: string, annotationBo
   window.dispatchEvent(new Event('rebook:local-library-changed'))
 }
 
+/**
+ * Raw record view for the WebDAV sync engine (src/features/sync). Ensures
+ * `contentHash` exists — it is the engine's book_id — and exposes the raw
+ * file/cover blobs the engine hashes and uploads.
+ */
+export type LocalBookSyncRecord = {
+  id: string
+  title: string
+  author: string | null
+  fileName: string
+  addedAt: string
+  updatedAt: string
+  progress: number
+  locator: ShelfItem['locator']
+  file: Blob
+  cover: Blob | null
+  contentHash: string
+}
+
+export async function listLocalBookSyncRecords(): Promise<LocalBookSyncRecord[]> {
+  const records = await getAllRecords()
+  const result: LocalBookSyncRecord[] = []
+  for (const record of records) {
+    if (!record.contentHash) {
+      record.contentHash = await hashBlob(record.file)
+      if (!record.contentHash) continue
+      await putRecord(record)
+    }
+    result.push({
+      id: record.id,
+      title: record.title,
+      author: record.author,
+      fileName: record.fileName,
+      addedAt: record.addedAt,
+      updatedAt: record.updatedAt,
+      progress: record.progress,
+      locator: record.locator,
+      file: record.file,
+      cover: record.cover ?? null,
+      contentHash: record.contentHash,
+    })
+  }
+  return result
+}
+
+/** Insert a book downloaded by the WebDAV sync engine; skips known content. */
+export async function importSyncedBook(book: {
+  id: string
+  title: string
+  authors: string[]
+  fileName: string
+  addedAt: number
+  content: Uint8Array
+  cover: Uint8Array | null
+}): Promise<void> {
+  const records = await getAllRecords()
+  if (records.some(record => record.contentHash === book.id)) return
+  const now = new Date().toISOString()
+  const addedAt = Number.isFinite(book.addedAt) && book.addedAt > 0
+    ? new Date(book.addedAt).toISOString()
+    : now
+  const record: LocalBookRecord = {
+    id: `${LOCAL_BOOK_PREFIX}${createClientUUID()}`,
+    title: book.title,
+    author: book.authors.filter(Boolean).join(', ') || null,
+    sourceType: extensionFromFileName(book.fileName) || 'ebook',
+    status: 'reading',
+    progress: 0,
+    locator: null,
+    addedAt,
+    updatedAt: now,
+    lastReadAt: null,
+    fileName: book.fileName,
+    fileSize: book.content.byteLength,
+    mimeType: 'application/octet-stream',
+    file: new Blob([book.content as BlobPart]),
+    cover: book.cover ? new Blob([book.cover as BlobPart]) : null,
+    contentHash: book.id,
+  }
+  await putRecord(record)
+  window.dispatchEvent(new Event('rebook:local-library-changed'))
+}
+
 export async function updateLocalBookMetadata(
   id: string,
   metadata: Partial<LocalBookMetadata>,
